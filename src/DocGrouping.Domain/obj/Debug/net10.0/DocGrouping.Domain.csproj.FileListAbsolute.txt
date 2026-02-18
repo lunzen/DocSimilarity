@@ -1,0 +1,11 @@
+C:\Temp\DocGrouping\src\DocGrouping.Domain\bin\Debug\net10.0\DocGrouping.Domain.deps.json
+C:\Temp\DocGrouping\src\DocGrouping.Domain\bin\Debug\net10.0\DocGrouping.Domain.dll
+C:\Temp\DocGrouping\src\DocGrouping.Domain\bin\Debug\net10.0\DocGrouping.Domain.pdb
+C:\Temp\DocGrouping\src\DocGrouping.Domain\obj\Debug\net10.0\DocGrouping.Domain.GeneratedMSBuildEditorConfig.editorconfig
+C:\Temp\DocGrouping\src\DocGrouping.Domain\obj\Debug\net10.0\DocGrouping.Domain.AssemblyInfoInputs.cache
+C:\Temp\DocGrouping\src\DocGrouping.Domain\obj\Debug\net10.0\DocGrouping.Domain.AssemblyInfo.cs
+C:\Temp\DocGrouping\src\DocGrouping.Domain\obj\Debug\net10.0\DocGrouping.Domain.csproj.CoreCompileInputs.cache
+C:\Temp\DocGrouping\src\DocGrouping.Domain\obj\Debug\net10.0\DocGrouping.Domain.dll
+C:\Temp\DocGrouping\src\DocGrouping.Domain\obj\Debug\net10.0\refint\DocGrouping.Domain.dll
+C:\Temp\DocGrouping\src\DocGrouping.Domain\obj\Debug\net10.0\DocGrouping.Domain.pdb
+C:\Temp\DocGrouping\src\DocGrouping.Domain\obj\Debug\net10.0\ref\DocGrouping.Domain.dll

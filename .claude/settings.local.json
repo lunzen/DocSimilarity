@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(where:*)",
+      "Bash(dotnet:*)",
+      "Bash(cmd.exe /c \"dotnet --version\")",
+      "Bash(cmd.exe /c \"dotnet --version && echo DONE\")",
+      "Bash(cmd.exe /c \"dotnet build C:\\\\Temp\\\\DocGrouping\")",
+      "Bash(cmd.exe /c \"dotnet build C:\\\\Temp\\\\DocGrouping 2>&1\")",
+      "Bash(\"/c/Program Files/dotnet/dotnet.exe\" build /c/Temp/DocGrouping)",
+      "Bash(\"/c/Program Files/dotnet/dotnet.exe\" --list-sdks)",
+      "Bash(\"/c/Users/mdeck/.dotnet/dotnet.exe\" --list-sdks)",
+      "Bash(\"/c/Users/mdeck/.dotnet/dotnet.exe\" build /c/Temp/DocGrouping)",
+      "Bash(\"/c/Users/mdeck/.dotnet/dotnet.exe\" test /c/Temp/DocGrouping)"
+    ]
+  }
+}

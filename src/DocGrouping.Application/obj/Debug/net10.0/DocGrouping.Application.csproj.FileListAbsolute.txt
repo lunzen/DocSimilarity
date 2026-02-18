@@ -1,0 +1,15 @@
+C:\Temp\DocGrouping\src\DocGrouping.Application\obj\Debug\net10.0\DocGrouping.Application.csproj.AssemblyReference.cache
+C:\Temp\DocGrouping\src\DocGrouping.Application\obj\Debug\net10.0\DocGrouping.Application.GeneratedMSBuildEditorConfig.editorconfig
+C:\Temp\DocGrouping\src\DocGrouping.Application\obj\Debug\net10.0\DocGrouping.Application.AssemblyInfoInputs.cache
+C:\Temp\DocGrouping\src\DocGrouping.Application\obj\Debug\net10.0\DocGrouping.Application.AssemblyInfo.cs
+C:\Temp\DocGrouping\src\DocGrouping.Application\obj\Debug\net10.0\DocGrouping.Application.csproj.CoreCompileInputs.cache
+C:\Temp\DocGrouping\src\DocGrouping.Application\bin\Debug\net10.0\DocGrouping.Application.deps.json
+C:\Temp\DocGrouping\src\DocGrouping.Application\bin\Debug\net10.0\DocGrouping.Application.dll
+C:\Temp\DocGrouping\src\DocGrouping.Application\bin\Debug\net10.0\DocGrouping.Application.pdb
+C:\Temp\DocGrouping\src\DocGrouping.Application\bin\Debug\net10.0\DocGrouping.Domain.dll
+C:\Temp\DocGrouping\src\DocGrouping.Application\bin\Debug\net10.0\DocGrouping.Domain.pdb
+C:\Temp\DocGrouping\src\DocGrouping.Application\obj\Debug\net10.0\DocGroup.CE414366.Up2Date
+C:\Temp\DocGrouping\src\DocGrouping.Application\obj\Debug\net10.0\DocGrouping.Application.dll
+C:\Temp\DocGrouping\src\DocGrouping.Application\obj\Debug\net10.0\refint\DocGrouping.Application.dll
+C:\Temp\DocGrouping\src\DocGrouping.Application\obj\Debug\net10.0\DocGrouping.Application.pdb
+C:\Temp\DocGrouping\src\DocGrouping.Application\obj\Debug\net10.0\ref\DocGrouping.Application.dll

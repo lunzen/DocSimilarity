@@ -1,0 +1,30 @@
+@if (Breakdown is not null && Breakdown.Count > 0)
+{
+	var total = Breakdown.Values.Sum();
+	<div class="progress" style="height: 1.5rem;">
+		@foreach (var (key, count) in Breakdown)
+		{
+			var pct = total > 0 ? (double)count / total * 100 : 0;
+			var css = key.ToLowerInvariant() switch
+			{
+				"veryhigh" or "exact" => "bg-confidence-veryhigh",
+				"high" => "bg-confidence-high",
+				"medium" => "bg-confidence-medium",
+				_ => "bg-confidence-none"
+			};
+			<div class="progress-bar @css" role="progressbar"
+				 style="width: @pct.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)%"
+				 aria-valuenow="@count" aria-valuemin="0" aria-valuemax="@total"
+				 title="@key: @count groups">
+				@if (pct > 8)
+				{
+					@($"{key}: {count}")
+				}
+			</div>
+		}
+	</div>
+}
+
+@code {
+	[Parameter] public Dictionary<string, int>? Breakdown { get; set; }
+}

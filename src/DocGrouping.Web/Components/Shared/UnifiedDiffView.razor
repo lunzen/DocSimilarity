@@ -1,0 +1,26 @@
+<div class="border rounded p-2 diff-pane">
+	@foreach (var line in DiffLines)
+	{
+		var css = line.Type switch
+		{
+			DiffType.Added => "diff-added",
+			DiffType.Removed => "diff-removed",
+			_ => ""
+		};
+		var prefix = line.Type switch
+		{
+			DiffType.Added => "+",
+			DiffType.Removed => "-",
+			_ => " "
+		};
+		<div class="@css">
+			<span class="diff-line-number">@(line.Line1?.ToString() ?? "  ")</span>
+			<span class="diff-line-number">@(line.Line2?.ToString() ?? "  ")</span>
+			<span class="text-muted me-1">@prefix</span>@line.Content
+		</div>
+	}
+</div>
+
+@code {
+	[Parameter] public List<DiffLine> DiffLines { get; set; } = [];
+}

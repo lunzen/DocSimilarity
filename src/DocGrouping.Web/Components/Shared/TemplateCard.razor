@@ -1,0 +1,15 @@
+<div class="template-card @(IsSelected ? "selected" : "")" @onclick="OnClicked">
+	<div class="d-flex justify-content-between align-items-start">
+		<h6 class="mb-1">@Template.Name</h6>
+		<span class="badge bg-light text-dark">@Template.Category</span>
+	</div>
+	<p class="small text-muted mb-0">@Template.Description</p>
+</div>
+
+@code {
+	[Parameter] public TemplateInfo Template { get; set; } = null!;
+	[Parameter] public bool IsSelected { get; set; }
+	[Parameter] public EventCallback OnClick { get; set; }
+
+	private async Task OnClicked() => await OnClick.InvokeAsync();
+}

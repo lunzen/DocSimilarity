@@ -1,0 +1,67 @@
+@{
+	var totalLines = DiffLines.Count;
+	var added = DiffLines.Count(l => l.Type == DiffType.Added);
+	var removed = DiffLines.Count(l => l.Type == DiffType.Removed);
+	var same = DiffLines.Count(l => l.Type == DiffType.Same);
+	var pctMatch = totalLines > 0 ? (double)same / (same + Math.Max(added, removed)) * 100 : 100;
+}
+
+<div class="card">
+	<div class="card-body">
+		<h6>Diff Summary</h6>
+		<ul class="list-unstyled mb-3">
+			<li><i class="bi bi-file-text me-2"></i> <strong>Total lines:</strong> @totalLines</li>
+			<li class="text-success"><i class="bi bi-plus-circle me-2"></i> <strong>Added:</strong> @added lines</li>
+			<li class="text-danger"><i class="bi bi-dash-circle me-2"></i> <strong>Removed:</strong> @removed lines</li>
+			<li><i class="bi bi-check-circle me-2"></i> <strong>Unchanged:</strong> @same lines</li>
+			<li><i class="bi bi-percent me-2"></i> <strong>Match:</strong> @pctMatch.ToString("F1")%</li>
+		</ul>
+
+		@if (added > 0 || removed > 0)
+		{
+			<h6 class="mt-3">Key Differences</h6>
+			<div class="small" style="max-height: 300px; overflow-y: auto;">
+				@{
+					var hunks = GetHunks();
+				}
+				@foreach (var hunk in hunks.Take(10))
+				{
+					<div class="mb-2 border-start border-3 ps-2 @(hunk.Type == DiffType.Added ? "border-success" : "border-danger")">
+						<span class="badge @(hunk.Type == DiffType.Added ? "bg-success" : "bg-danger") me-1">
+							@(hunk.Type == DiffType.Added ? "+" : "-")
+						</span>
+						<span class="text-muted">Line @hunk.LineNumber:</span>
+						<span>@Truncate(hunk.Content, 120)</span>
+					</div>
+				}
+				@if (hunks.Count > 10)
+				{
+					<p class="text-muted">...and @(hunks.Count - 10) more differences</p>
+				}
+			</div>
+		}
+		else
+		{
+			<div class="alert alert-success mb-0">
+				<i class="bi bi-check2-all"></i> Documents are identical.
+			</div>
+		}
+	</div>
+</div>
+
+@code {
+	[Parameter] public List<DiffLine> DiffLines { get; set; } = [];
+
+	private record HunkInfo(DiffType Type, int LineNumber, string Content);
+
+	private List<HunkInfo> GetHunks()
+	{
+		return DiffLines
+			.Where(l => l.Type != DiffType.Same)
+			.Select(l => new HunkInfo(l.Type, l.Line1 ?? l.Line2 ?? 0, l.Content))
+			.ToList();
+	}
+
+	private static string Truncate(string text, int max)
+		=> text.Length > max ? text[..max] + "..." : text;
+}

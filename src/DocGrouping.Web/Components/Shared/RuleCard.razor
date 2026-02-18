@@ -1,0 +1,53 @@
+<div class="rule-card card">
+	<div class="card-body d-flex justify-content-between align-items-start">
+		<div class="flex-grow-1">
+			<div class="d-flex align-items-center gap-2 mb-1">
+				<span class="badge bg-secondary">P@Rule.Priority</span>
+				<strong class="@(Rule.Enabled ? "" : "text-muted text-decoration-line-through")">@Rule.Name</strong>
+				<span class="badge @GetTypeBadgeCss()">@Rule.RuleType</span>
+				<span class="badge @GetActionBadgeCss()">@Rule.Action</span>
+			</div>
+			<p class="small text-muted mb-0">@Rule.Description</p>
+		</div>
+		<div class="d-flex align-items-center gap-1 ms-3">
+			<div class="form-check form-switch">
+				<input class="form-check-input" type="checkbox" checked="@Rule.Enabled"
+					   @onchange="OnToggle" title="Toggle enabled" />
+			</div>
+			<button class="btn btn-sm btn-outline-primary" @onclick="OnEditClicked" title="Edit">
+				<i class="bi bi-pencil"></i>
+			</button>
+			<button class="btn btn-sm btn-outline-danger" @onclick="OnDeleteClicked" title="Delete">
+				<i class="bi bi-trash"></i>
+			</button>
+		</div>
+	</div>
+</div>
+
+@code {
+	[Parameter] public RuleDefinition Rule { get; set; } = null!;
+	[Parameter] public EventCallback OnToggleEnabled { get; set; }
+	[Parameter] public EventCallback OnEdit { get; set; }
+	[Parameter] public EventCallback OnDelete { get; set; }
+
+	private async Task OnToggle(ChangeEventArgs e) => await OnToggleEnabled.InvokeAsync();
+	private async Task OnEditClicked() => await OnEdit.InvokeAsync();
+	private async Task OnDeleteClicked() => await OnDelete.InvokeAsync();
+
+	private string GetTypeBadgeCss() => Rule.RuleType switch
+	{
+		RuleType.VersionPriority => "bg-info text-dark",
+		RuleType.MetadataSeparator => "bg-warning text-dark",
+		RuleType.DocumentTypeMatch => "bg-primary",
+		_ => "bg-light text-dark border",
+	};
+
+	private string GetActionBadgeCss() => Rule.Action switch
+	{
+		RuleAction.ForceGroup => "bg-success",
+		RuleAction.PreventGroup => "bg-danger",
+		RuleAction.SetCanonical => "bg-info text-dark",
+		RuleAction.Separate => "bg-warning text-dark",
+		_ => "bg-secondary",
+	};
+}

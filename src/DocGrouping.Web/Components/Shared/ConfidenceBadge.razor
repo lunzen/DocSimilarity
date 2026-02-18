@@ -1,0 +1,16 @@
+@{
+	var css = Confidence?.ToLowerInvariant() switch
+	{
+		"veryhigh" or "exact" => "bg-confidence-veryhigh",
+		"high" => "bg-confidence-high",
+		"medium" => "bg-confidence-medium",
+		_ => "bg-confidence-none"
+	};
+	var label = Confidence ?? "None";
+}
+
+<span class="badge @css">@label</span>
+
+@code {
+	[Parameter] public string? Confidence { get; set; }
+}

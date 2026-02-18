@@ -1,0 +1,106 @@
+@if (Visible)
+{
+	<div class="modal show d-block" tabindex="-1" style="background-color: rgba(0,0,0,0.5);">
+		<div class="modal-dialog">
+			<div class="modal-content">
+				<div class="modal-header">
+					<h5 class="modal-title">@(IsEdit ? "Edit Rule" : "Add Rule")</h5>
+					<button type="button" class="btn-close" @onclick="Cancel"></button>
+				</div>
+				<div class="modal-body">
+					<div class="mb-3">
+						<label class="form-label">Name</label>
+						<input type="text" class="form-control" @bind="Name" />
+					</div>
+					<div class="mb-3">
+						<label class="form-label">Description</label>
+						<textarea class="form-control" rows="2" @bind="Description"></textarea>
+					</div>
+					<div class="row mb-3">
+						<div class="col-6">
+							<label class="form-label">Rule Type</label>
+							<select class="form-select" @bind="SelectedRuleType">
+								@foreach (var rt in Enum.GetValues<RuleType>())
+								{
+									<option value="@rt">@rt</option>
+								}
+							</select>
+						</div>
+						<div class="col-6">
+							<label class="form-label">Action</label>
+							<select class="form-select" @bind="SelectedAction">
+								@foreach (var a in Enum.GetValues<RuleAction>())
+								{
+									<option value="@a">@a</option>
+								}
+							</select>
+						</div>
+					</div>
+					<div class="row mb-3">
+						<div class="col-6">
+							<label class="form-label">Priority</label>
+							<input type="number" class="form-control" @bind="Priority" min="1" max="100" />
+						</div>
+						<div class="col-6 d-flex align-items-end">
+							<div class="form-check">
+								<input class="form-check-input" type="checkbox" @bind="Enabled" id="editEnabled" />
+								<label class="form-check-label" for="editEnabled">Enabled</label>
+							</div>
+						</div>
+					</div>
+					<div class="mb-3">
+						<label class="form-label">Conditions (JSON)</label>
+						<textarea class="form-control font-monospace" rows="3" @bind="ConditionsJson"
+								  placeholder='{"key": "value"}'></textarea>
+					</div>
+				</div>
+				<div class="modal-footer">
+					<button class="btn btn-secondary" @onclick="Cancel">Cancel</button>
+					<button class="btn btn-primary" @onclick="Save">@(IsEdit ? "Update" : "Create")</button>
+				</div>
+			</div>
+		</div>
+	</div>
+}
+
+@code {
+	[Parameter] public bool Visible { get; set; }
+	[Parameter] public bool IsEdit { get; set; }
+	[Parameter] public EventCallback OnCancel { get; set; }
+	[Parameter] public EventCallback<RuleFormData> OnSave { get; set; }
+
+	[Parameter] public string Name { get; set; } = "";
+	[Parameter] public string Description { get; set; } = "";
+	[Parameter] public RuleType SelectedRuleType { get; set; } = RuleType.TextPattern;
+	[Parameter] public RuleAction SelectedAction { get; set; } = RuleAction.PreventGroup;
+	[Parameter] public int Priority { get; set; } = 50;
+	[Parameter] public bool Enabled { get; set; } = true;
+	[Parameter] public string ConditionsJson { get; set; } = "{}";
+
+	private async Task Cancel() => await OnCancel.InvokeAsync();
+
+	private async Task Save()
+	{
+		await OnSave.InvokeAsync(new RuleFormData
+		{
+			Name = Name,
+			Description = Description,
+			RuleType = SelectedRuleType,
+			Action = SelectedAction,
+			Priority = Priority,
+			Enabled = Enabled,
+			ConditionsJson = ConditionsJson,
+		});
+	}
+
+	public class RuleFormData
+	{
+		public string Name { get; set; } = "";
+		public string Description { get; set; } = "";
+		public RuleType RuleType { get; set; }
+		public RuleAction Action { get; set; }
+		public int Priority { get; set; }
+		public bool Enabled { get; set; }
+		public string ConditionsJson { get; set; } = "{}";
+	}
+}

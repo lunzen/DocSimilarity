@@ -1,0 +1,39 @@
+{
+  "runtimeTarget": {
+    "name": ".NETCoreApp,Version=v10.0",
+    "signature": ""
+  },
+  "compilationOptions": {},
+  "targets": {
+    ".NETCoreApp,Version=v10.0": {
+      "DocGrouping.Application/1.0.0": {
+        "dependencies": {
+          "DocGrouping.Domain": "1.0.0"
+        },
+        "runtime": {
+          "DocGrouping.Application.dll": {}
+        }
+      },
+      "DocGrouping.Domain/1.0.0": {
+        "runtime": {
+          "DocGrouping.Domain.dll": {
+            "assemblyVersion": "1.0.0.0",
+            "fileVersion": "1.0.0.0"
+          }
+        }
+      }
+    }
+  },
+  "libraries": {
+    "DocGrouping.Application/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "DocGrouping.Domain/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    }
+  }
+}

@@ -1,0 +1,35 @@
+<div class="top-row ps-3 navbar navbar-dark">
+    <div class="container-fluid">
+        <a class="navbar-brand" href="">DocGrouping</a>
+    </div>
+</div>
+
+<input type="checkbox" title="Navigation menu" class="navbar-toggler" />
+
+<div class="nav-scrollable" onclick="document.querySelector('.navbar-toggler').click()">
+    <nav class="nav flex-column">
+        <div class="nav-item px-3">
+            <NavLink class="nav-link" href="" Match="NavLinkMatch.All">
+                <i class="bi bi-cloud-upload nav-icon"></i> Upload
+            </NavLink>
+        </div>
+
+        <div class="nav-item px-3">
+            <NavLink class="nav-link" href="results">
+                <i class="bi bi-bar-chart nav-icon"></i> Results
+            </NavLink>
+        </div>
+
+        <div class="nav-item px-3">
+            <NavLink class="nav-link" href="generator">
+                <i class="bi bi-file-earmark-plus nav-icon"></i> Generator
+            </NavLink>
+        </div>
+
+        <div class="nav-item px-3">
+            <NavLink class="nav-link" href="rules">
+                <i class="bi bi-gear nav-icon"></i> Rules
+            </NavLink>
+        </div>
+    </nav>
+</div>

@@ -1,0 +1,14 @@
+<div class="kpi-card bg-white border shadow-sm">
+	<div class="mb-2">
+		<i class="bi @Icon fs-3" style="color: @Color;"></i>
+	</div>
+	<div class="kpi-value" style="color: @Color;">@Value</div>
+	<div class="kpi-label">@Label</div>
+</div>
+
+@code {
+	[Parameter] public string Label { get; set; } = "";
+	[Parameter] public string Value { get; set; } = "";
+	[Parameter] public string Icon { get; set; } = "bi-circle";
+	[Parameter] public string Color { get; set; } = "#333";
+}

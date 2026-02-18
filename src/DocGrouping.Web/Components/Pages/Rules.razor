@@ -1,0 +1,246 @@
+@page "/rules"
+@rendermode InteractiveServer
+@inject IBusinessRuleRepository RuleRepo
+@inject RulesEngine RulesEngine
+@inject ILogger<Rules> Logger
+
+<PageTitle>Rules - DocGrouping</PageTitle>
+
+<h3 class="mb-3"><i class="bi bi-gear"></i> Business Rules</h3>
+
+<LoadingSpinner Visible="@_loading" Message="Loading rules..." />
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+	<p class="text-muted mb-0">Manage rules that control document grouping behavior.</p>
+	<button class="btn btn-primary" @onclick="ShowAddModal">
+		<i class="bi bi-plus-lg"></i> Add Rule
+	</button>
+</div>
+
+@if (_rules.Count == 0 && !_loading)
+{
+	<div class="alert alert-secondary text-center">
+		<i class="bi bi-inbox"></i> No rules configured.
+	</div>
+}
+else
+{
+	@foreach (var rule in _rules)
+	{
+		<RuleCard Rule="@rule"
+				  OnToggleEnabled="() => ToggleRule(rule)"
+				  OnEdit="() => ShowEditModal(rule)"
+				  OnDelete="() => DeleteRule(rule)" />
+	}
+}
+
+<RuleEditModal Visible="@_showModal"
+			   IsEdit="@_isEdit"
+			   Name="@_editName"
+			   Description="@_editDescription"
+			   SelectedRuleType="@_editRuleType"
+			   SelectedAction="@_editAction"
+			   Priority="@_editPriority"
+			   Enabled="@_editEnabled"
+			   ConditionsJson="@_editConditions"
+			   OnCancel="HideModal"
+			   OnSave="SaveRule" />
+
+@if (!string.IsNullOrEmpty(_statusMessage))
+{
+	<div class="alert @_statusCss mt-3">@_statusMessage</div>
+}
+
+@code {
+	private List<RuleDefinition> _rules = [];
+	private bool _loading = true;
+	private bool _showModal;
+	private bool _isEdit;
+	private string? _editingRuleId;
+	private string? _statusMessage;
+	private string _statusCss = "alert-info";
+
+	// Modal fields
+	private string _editName = "";
+	private string _editDescription = "";
+	private RuleType _editRuleType = RuleType.TextPattern;
+	private RuleAction _editAction = RuleAction.PreventGroup;
+	private int _editPriority = 50;
+	private bool _editEnabled = true;
+	private string _editConditions = "{}";
+
+	protected override void OnInitialized()
+	{
+		LoadRules();
+		_loading = false;
+	}
+
+	private void LoadRules()
+	{
+		_rules = RulesEngine.GetAllRules();
+	}
+
+	private void ShowAddModal()
+	{
+		_isEdit = false;
+		_editingRuleId = null;
+		_editName = "";
+		_editDescription = "";
+		_editRuleType = RuleType.TextPattern;
+		_editAction = RuleAction.PreventGroup;
+		_editPriority = 50;
+		_editEnabled = true;
+		_editConditions = "{}";
+		_showModal = true;
+	}
+
+	private void ShowEditModal(RuleDefinition rule)
+	{
+		_isEdit = true;
+		_editingRuleId = rule.RuleId;
+		_editName = rule.Name;
+		_editDescription = rule.Description;
+		_editRuleType = rule.RuleType;
+		_editAction = rule.Action;
+		_editPriority = rule.Priority;
+		_editEnabled = rule.Enabled;
+		_editConditions = rule.Conditions.Count > 0
+			? System.Text.Json.JsonSerializer.Serialize(rule.Conditions)
+			: "{}";
+		_showModal = true;
+	}
+
+	private void HideModal()
+	{
+		_showModal = false;
+	}
+
+	private async Task SaveRule(RuleEditModal.RuleFormData form)
+	{
+		try
+		{
+			if (_isEdit && _editingRuleId is not null)
+			{
+				RulesEngine.UpdateRule(_editingRuleId, r =>
+				{
+					r.Name = form.Name;
+					r.Description = form.Description;
+					r.RuleType = form.RuleType;
+					r.Action = form.Action;
+					r.Priority = form.Priority;
+					r.Enabled = form.Enabled;
+				});
+
+				// Sync to DB
+				var dbRule = await RuleRepo.GetByRuleIdAsync(_editingRuleId);
+				if (dbRule is not null)
+				{
+					dbRule.Name = form.Name;
+					dbRule.Description = form.Description;
+					dbRule.RuleType = form.RuleType;
+					dbRule.Action = form.Action;
+					dbRule.Priority = form.Priority;
+					dbRule.Enabled = form.Enabled;
+					dbRule.UpdatedAt = DateTimeOffset.UtcNow;
+					await RuleRepo.UpdateAsync(dbRule);
+				}
+
+				_statusMessage = $"Rule '{form.Name}' updated.";
+			}
+			else
+			{
+				var ruleId = $"custom_{Guid.NewGuid():N}"[..24];
+
+				RulesEngine.AddRule(new RuleDefinition
+				{
+					RuleId = ruleId,
+					Name = form.Name,
+					Description = form.Description,
+					RuleType = form.RuleType,
+					Action = form.Action,
+					Priority = form.Priority,
+					Enabled = form.Enabled,
+				});
+
+				// Persist to DB
+				var dbRule = new BusinessRule
+				{
+					Id = Guid.NewGuid(),
+					RuleId = ruleId,
+					Name = form.Name,
+					Description = form.Description,
+					RuleType = form.RuleType,
+					Action = form.Action,
+					Priority = form.Priority,
+					Enabled = form.Enabled,
+					Conditions = string.IsNullOrEmpty(form.ConditionsJson) || form.ConditionsJson == "{}"
+						? null
+						: System.Text.Json.JsonDocument.Parse(form.ConditionsJson),
+					CreatedAt = DateTimeOffset.UtcNow,
+					UpdatedAt = DateTimeOffset.UtcNow,
+				};
+				await RuleRepo.AddAsync(dbRule);
+
+				_statusMessage = $"Rule '{form.Name}' created.";
+			}
+
+			_statusCss = "alert-success";
+			LoadRules();
+			_showModal = false;
+		}
+		catch (Exception ex)
+		{
+			Logger.LogError(ex, "Error saving rule");
+			_statusMessage = $"Error: {ex.Message}";
+			_statusCss = "alert-danger";
+		}
+	}
+
+	private async Task ToggleRule(RuleDefinition rule)
+	{
+		try
+		{
+			RulesEngine.UpdateRule(rule.RuleId, r => r.Enabled = !r.Enabled);
+
+			var dbRule = await RuleRepo.GetByRuleIdAsync(rule.RuleId);
+			if (dbRule is not null)
+			{
+				dbRule.Enabled = !dbRule.Enabled;
+				dbRule.UpdatedAt = DateTimeOffset.UtcNow;
+				await RuleRepo.UpdateAsync(dbRule);
+			}
+
+			LoadRules();
+		}
+		catch (Exception ex)
+		{
+			Logger.LogError(ex, "Error toggling rule");
+			_statusMessage = $"Error: {ex.Message}";
+			_statusCss = "alert-danger";
+		}
+	}
+
+	private async Task DeleteRule(RuleDefinition rule)
+	{
+		try
+		{
+			RulesEngine.RemoveRule(rule.RuleId);
+
+			var dbRule = await RuleRepo.GetByRuleIdAsync(rule.RuleId);
+			if (dbRule is not null)
+			{
+				await RuleRepo.DeleteAsync(dbRule.Id);
+			}
+
+			_statusMessage = $"Rule '{rule.Name}' deleted.";
+			_statusCss = "alert-success";
+			LoadRules();
+		}
+		catch (Exception ex)
+		{
+			Logger.LogError(ex, "Error deleting rule");
+			_statusMessage = $"Error: {ex.Message}";
+			_statusCss = "alert-danger";
+		}
+	}
+}

@@ -1,0 +1,13 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/DocGrouping.Application/DocGrouping.Application.csproj" />
+    <Project Path="src/DocGrouping.Domain/DocGrouping.Domain.csproj" />
+    <Project Path="src/DocGrouping.Infrastructure/DocGrouping.Infrastructure.csproj" />
+    <Project Path="src/DocGrouping.Web/DocGrouping.Web.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/DocGrouping.Domain.Tests/DocGrouping.Domain.Tests.csproj" />
+    <Project Path="tests/DocGrouping.Infrastructure.Tests/DocGrouping.Infrastructure.Tests.csproj" />
+    <Project Path="tests/DocGrouping.Integration.Tests/DocGrouping.Integration.Tests.csproj" />
+  </Folder>
+</Solution>

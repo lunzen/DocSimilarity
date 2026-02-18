@@ -1,0 +1,191 @@
+@page "/comparison/{GroupNumber:int}"
+@rendermode InteractiveServer
+@inject IDocumentGroupRepository GroupRepo
+@inject IDocumentRepository DocumentRepo
+@inject DocumentFingerprinter Fingerprinter
+@inject IJSRuntime JS
+@inject ILogger<Comparison> Logger
+
+<PageTitle>Compare - Group @GroupNumber</PageTitle>
+
+<LoadingSpinner Visible="@_loading" Message="Loading comparison..." />
+
+@if (_group is not null && _doc1 is not null && _doc2 is not null)
+{
+	@* Sticky header *@
+	<div class="comparison-header mb-3">
+		<div class="d-flex justify-content-between align-items-center">
+			<div>
+				<h4 class="mb-0">
+					<a href="/results" class="text-decoration-none me-2"><i class="bi bi-arrow-left"></i></a>
+					Group @_group.GroupNumber
+					<ConfidenceBadge Confidence="@_group.Confidence.ToString()" />
+				</h4>
+			</div>
+
+			@if (_allDocs.Count > 2)
+			{
+				<div class="d-flex gap-2 align-items-center">
+					<select class="form-select form-select-sm" style="width: auto;"
+							@onchange="OnDoc1Changed">
+						@foreach (var doc in _allDocs)
+						{
+							<option value="@doc.Id" selected="@(doc.Id == _doc1.Id)">@doc.FileName</option>
+						}
+					</select>
+					<span class="text-muted">vs</span>
+					<select class="form-select form-select-sm" style="width: auto;"
+							@onchange="OnDoc2Changed">
+						@foreach (var doc in _allDocs)
+						{
+							<option value="@doc.Id" selected="@(doc.Id == _doc2.Id)">@doc.FileName</option>
+						}
+					</select>
+				</div>
+			}
+			else
+			{
+				<div class="text-muted">
+					@_doc1.FileName <span class="mx-2">vs</span> @_doc2.FileName
+				</div>
+			}
+		</div>
+	</div>
+
+	@* Tab bar *@
+	<ul class="nav nav-tabs mb-3">
+		<li class="nav-item">
+			<button class="nav-link @(_activeTab == "side-by-side" ? "active" : "")" @onclick='() => _activeTab = "side-by-side"'>
+				<i class="bi bi-layout-split"></i> Side-by-Side
+			</button>
+		</li>
+		<li class="nav-item">
+			<button class="nav-link @(_activeTab == "unified" ? "active" : "")" @onclick='() => _activeTab = "unified"'>
+				<i class="bi bi-list"></i> Unified Diff
+			</button>
+		</li>
+		<li class="nav-item">
+			<button class="nav-link @(_activeTab == "summary" ? "active" : "")" @onclick='() => _activeTab = "summary"'>
+				<i class="bi bi-card-text"></i> Summary
+			</button>
+		</li>
+	</ul>
+
+	@* Tab content *@
+	@switch (_activeTab)
+	{
+		case "side-by-side":
+			<SideBySideView DiffLines="@_diffLines" />
+			break;
+		case "unified":
+			<UnifiedDiffView DiffLines="@_diffLines" />
+			break;
+		case "summary":
+			<DiffSummary DiffLines="@_diffLines" />
+			break;
+	}
+
+	@* Similarity metrics *@
+	@if (_explanation is not null)
+	{
+		<div class="mt-3">
+			<h6 class="text-muted">Similarity Metrics</h6>
+			<MatchExplanation Explanation="@_explanation" />
+		</div>
+	}
+
+	@* Metadata comparison *@
+	<MetadataComparison Doc1="@_doc1" Doc2="@_doc2" />
+}
+else if (!_loading)
+{
+	<div class="alert alert-warning">
+		<i class="bi bi-exclamation-triangle"></i> Group @GroupNumber not found or has fewer than 2 documents.
+		<a href="/results">Back to results</a>
+	</div>
+}
+
+@code {
+	[Parameter] public int GroupNumber { get; set; }
+
+	private DocumentGroup? _group;
+	private Document? _doc1;
+	private Document? _doc2;
+	private List<Document> _allDocs = [];
+	private List<DiffLine> _diffLines = [];
+	private MatchExplanationDto? _explanation;
+	private string _activeTab = "side-by-side";
+	private bool _loading = true;
+
+	private readonly DiffEngine _diffEngine = new();
+
+	protected override async Task OnInitializedAsync()
+	{
+		try
+		{
+			_group = await GroupRepo.GetByGroupNumberAsync(GroupNumber);
+			if (_group is null || _group.Memberships.Count < 2)
+			{
+				_loading = false;
+				return;
+			}
+
+			_allDocs = _group.Memberships
+				.OrderByDescending(m => m.IsCanonical)
+				.Select(m => m.Document)
+				.ToList();
+
+			_doc1 = _allDocs[0];
+			_doc2 = _allDocs[1];
+
+			ComputeDiffAndMetrics();
+		}
+		catch (Exception ex)
+		{
+			Logger.LogError(ex, "Error loading comparison for group {GroupNumber}", GroupNumber);
+		}
+		finally
+		{
+			_loading = false;
+		}
+	}
+
+	private void ComputeDiffAndMetrics()
+	{
+		if (_doc1 is null || _doc2 is null) return;
+
+		_diffLines = _diffEngine.ComputeDiff(_doc1.OriginalText, _doc2.OriginalText);
+
+		var metrics = Fingerprinter.CalculateSimilarityMetrics(
+			_doc1.NormalizedText, _doc2.NormalizedText);
+
+		_explanation = new MatchExplanationDto
+		{
+			JaccardSimilarity = metrics.JaccardSimilarity,
+			OverlapCoefficient = metrics.OverlapCoefficient,
+			FuzzySignatureMatch = metrics.FuzzySignatureJaccard,
+			CommonTokensCount = metrics.CommonTokens,
+			TotalTokensDoc1 = metrics.TokenCount1,
+			TotalTokensDoc2 = metrics.TokenCount2,
+			MatchType = _group?.Confidence.ToString() ?? ""
+		};
+	}
+
+	private async Task OnDoc1Changed(ChangeEventArgs e)
+	{
+		if (Guid.TryParse(e.Value?.ToString(), out var id))
+		{
+			_doc1 = _allDocs.FirstOrDefault(d => d.Id == id);
+			ComputeDiffAndMetrics();
+		}
+	}
+
+	private async Task OnDoc2Changed(ChangeEventArgs e)
+	{
+		if (Guid.TryParse(e.Value?.ToString(), out var id))
+		{
+			_doc2 = _allDocs.FirstOrDefault(d => d.Id == id);
+			ComputeDiffAndMetrics();
+		}
+	}
+}

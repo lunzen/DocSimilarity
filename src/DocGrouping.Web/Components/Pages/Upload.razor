@@ -1,0 +1,263 @@
+@page "/"
+@rendermode InteractiveServer
+@implements IAsyncDisposable
+@inject IDocumentIngestionService IngestionService
+@inject IGroupingOrchestrator Orchestrator
+@inject IDocumentRepository DocumentRepo
+@inject NavigationManager Nav
+@inject IJSRuntime JS
+@inject ILogger<Upload> Logger
+
+<PageTitle>Upload - DocGrouping</PageTitle>
+
+<h3 class="mb-3"><i class="bi bi-cloud-upload"></i> Upload Documents</h3>
+
+<LoadingSpinner Visible="@_loading" Message="@_loadingMessage" />
+
+@* Status bar *@
+@if (_existingCount > 0)
+{
+	<div class="alert alert-info d-flex justify-content-between align-items-center mb-3">
+		<span><i class="bi bi-info-circle me-2"></i><strong>@_existingCount</strong> document(s) already in database.</span>
+		<div class="d-flex gap-2">
+			<button class="btn btn-sm btn-outline-primary" @onclick="RerunGrouping" disabled="@_loading">
+				<i class="bi bi-arrow-repeat"></i> Re-run Grouping
+			</button>
+			<a href="/results" class="btn btn-sm btn-primary">
+				<i class="bi bi-bar-chart"></i> View Results
+			</a>
+		</div>
+	</div>
+}
+else
+{
+	<div class="alert alert-secondary d-flex align-items-center mb-3">
+		<i class="bi bi-info-circle me-2"></i>
+		<span>No documents in database yet. Upload files or load sample documents below.</span>
+	</div>
+}
+
+@* Drop zone *@
+<div class="drop-zone mb-3" @ref="_dropZone">
+	<i class="bi bi-cloud-arrow-up fs-1 text-muted"></i>
+	<p class="mt-2 mb-1">Drag &amp; drop files here</p>
+	<p class="small text-muted mb-2">Supports .txt and .pdf files</p>
+	<label class="btn btn-outline-primary btn-sm">
+		<i class="bi bi-folder2-open"></i> Browse Files
+		<InputFile OnChange="OnFilesSelected" multiple style="display: none;" accept=".txt,.pdf" @ref="_inputFile" />
+	</label>
+</div>
+
+@* Sample documents button *@
+<div class="d-flex gap-2 mb-3">
+	<button class="btn btn-outline-secondary" @onclick="LoadSampleDocuments" disabled="@_loading">
+		<i class="bi bi-folder2-open"></i> Load Sample Documents
+	</button>
+	@if (_files.Count > 0)
+	{
+		<button class="btn btn-outline-danger" @onclick="ClearFiles" disabled="@_loading">
+			<i class="bi bi-trash"></i> Clear All
+		</button>
+	}
+</div>
+
+@* File list *@
+@if (_files.Count > 0)
+{
+	<div class="card mb-3">
+		<div class="card-header d-flex justify-content-between align-items-center">
+			<span><strong>@_files.Count</strong> file(s) selected</span>
+		</div>
+		<div class="card-body p-0">
+			<table class="table table-sm table-hover mb-0">
+				<thead>
+					<tr>
+						<th>Filename</th>
+						<th>Size</th>
+						<th>Type</th>
+						<th></th>
+					</tr>
+				</thead>
+				<tbody>
+					@foreach (var file in _files)
+					{
+						<tr>
+							<td>@file.Name</td>
+							<td>@FormatBytes(file.Size)</td>
+							<td><span class="badge bg-light text-dark">@file.ContentType</span></td>
+							<td>
+								<button class="btn btn-sm btn-outline-danger" @onclick="() => RemoveFile(file)" disabled="@_loading">
+									<i class="bi bi-x"></i>
+								</button>
+							</td>
+						</tr>
+					}
+				</tbody>
+			</table>
+		</div>
+	</div>
+
+	<button class="btn btn-primary btn-lg" @onclick="ProcessDocuments" disabled="@_loading">
+		<i class="bi bi-play-fill"></i> Process Documents
+	</button>
+}
+
+@* Status messages *@
+@if (!string.IsNullOrEmpty(_statusMessage))
+{
+	<div class="alert @_statusCss mt-3">@_statusMessage</div>
+}
+
+@code {
+	private ElementReference _dropZone;
+	private InputFile? _inputFile;
+	private IJSObjectReference? _jsModule;
+	private List<IBrowserFile> _files = [];
+	private bool _loading;
+	private string _loadingMessage = "Processing...";
+	private int _existingCount;
+	private string? _statusMessage;
+	private string _statusCss = "alert-info";
+
+	protected override async Task OnInitializedAsync()
+	{
+		_existingCount = await DocumentRepo.GetCountAsync();
+	}
+
+	protected override async Task OnAfterRenderAsync(bool firstRender)
+	{
+		if (firstRender)
+		{
+			_jsModule = await JS.InvokeAsync<IJSObjectReference>("import", "./js/filedrop.js");
+			var inputElement = _inputFile?.Element;
+			await _jsModule.InvokeVoidAsync("initDropZone", _dropZone, inputElement);
+		}
+	}
+
+	private void OnFilesSelected(InputFileChangeEventArgs e)
+	{
+		foreach (var file in e.GetMultipleFiles(100))
+		{
+			if (!_files.Any(f => f.Name == file.Name))
+			{
+				_files.Add(file);
+			}
+		}
+	}
+
+	private void RemoveFile(IBrowserFile file) => _files.Remove(file);
+	private void ClearFiles() => _files.Clear();
+
+	private async Task RerunGrouping()
+	{
+		_loading = true;
+		_loadingMessage = "Re-running grouping on existing documents...";
+		StateHasChanged();
+
+		try
+		{
+			await Orchestrator.GroupAllDocumentsAsync();
+			Nav.NavigateTo("/results");
+		}
+		catch (Exception ex)
+		{
+			Logger.LogError(ex, "Error re-running grouping");
+			_statusMessage = $"Error: {ex.Message}";
+			_statusCss = "alert-danger";
+		}
+		finally
+		{
+			_loading = false;
+		}
+	}
+
+	private async Task LoadSampleDocuments()
+	{
+		_loading = true;
+		_loadingMessage = "Loading sample documents...";
+		StateHasChanged();
+
+		try
+		{
+			var samplePath = @"C:\Temp\Dedupe branch 2\De Dupe Grouping Concept\sample_documents";
+			var docs = await IngestionService.IngestDirectoryAsync(samplePath);
+			_existingCount = await DocumentRepo.GetCountAsync();
+
+			_statusMessage = $"Loaded {docs.Count} sample document(s). Click 'Process Documents' on the Results page or load more files.";
+			_statusCss = "alert-success";
+
+			_loadingMessage = "Grouping documents...";
+			StateHasChanged();
+
+			await Orchestrator.GroupAllDocumentsAsync();
+
+			Nav.NavigateTo("/results");
+		}
+		catch (Exception ex)
+		{
+			Logger.LogError(ex, "Error loading sample documents");
+			_statusMessage = $"Error: {ex.Message}";
+			_statusCss = "alert-danger";
+		}
+		finally
+		{
+			_loading = false;
+		}
+	}
+
+	private async Task ProcessDocuments()
+	{
+		if (_files.Count == 0) return;
+
+		_loading = true;
+		_loadingMessage = "Ingesting documents...";
+		StateHasChanged();
+
+		try
+		{
+			var ingestedCount = 0;
+			foreach (var file in _files)
+			{
+				using var stream = file.OpenReadStream(maxAllowedSize: 10 * 1024 * 1024);
+				using var reader = new StreamReader(stream);
+				var text = await reader.ReadToEndAsync();
+				await IngestionService.IngestTextAsync(file.Name, text);
+				ingestedCount++;
+				_loadingMessage = $"Ingesting documents... ({ingestedCount}/{_files.Count})";
+				StateHasChanged();
+			}
+
+			_loadingMessage = "Grouping documents...";
+			StateHasChanged();
+
+			await Orchestrator.GroupAllDocumentsAsync();
+
+			Nav.NavigateTo("/results");
+		}
+		catch (Exception ex)
+		{
+			Logger.LogError(ex, "Error processing documents");
+			_statusMessage = $"Error: {ex.Message}";
+			_statusCss = "alert-danger";
+			_loading = false;
+		}
+	}
+
+	private const long KB = 1024;
+	private const long MB = 1024 * 1024;
+
+	private static string FormatBytes(long bytes)
+	{
+		if (bytes < KB) return $"{bytes} B";
+		if (bytes < MB) return $"{bytes / (double)KB:F1} KB";
+		return $"{bytes / (double)MB:F1} MB";
+	}
+
+	async ValueTask IAsyncDisposable.DisposeAsync()
+	{
+		if (_jsModule is not null)
+		{
+			await _jsModule.DisposeAsync();
+		}
+	}
+}

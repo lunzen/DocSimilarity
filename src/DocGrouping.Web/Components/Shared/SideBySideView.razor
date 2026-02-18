@@ -1,0 +1,84 @@
+@implements IAsyncDisposable
+@inject IJSRuntime JS
+
+<div class="row g-0">
+	<div class="col-6 pe-1">
+		<div class="border rounded p-2 diff-pane" @ref="_pane1">
+			@foreach (var line in DiffLines)
+			{
+				var css = line.Type switch
+				{
+					DiffType.Removed => "diff-removed",
+					DiffType.Same => "",
+					_ => "d-none"
+				};
+				var addedPlaceholder = line.Type == DiffType.Added ? "diff-added" : "";
+				@if (line.Type != DiffType.Added)
+				{
+					<div class="@css">
+						@if (ShowLineNumbers)
+						{
+							<span class="diff-line-number">@(line.Line1?.ToString() ?? "")</span>
+						}
+						@line.Content
+					</div>
+				}
+				else
+				{
+					<div class="@addedPlaceholder">&nbsp;</div>
+				}
+			}
+		</div>
+	</div>
+	<div class="col-6 ps-1">
+		<div class="border rounded p-2 diff-pane" @ref="_pane2">
+			@foreach (var line in DiffLines)
+			{
+				var css = line.Type switch
+				{
+					DiffType.Added => "diff-added",
+					DiffType.Same => "",
+					_ => "d-none"
+				};
+				var removedPlaceholder = line.Type == DiffType.Removed ? "diff-removed" : "";
+				@if (line.Type != DiffType.Removed)
+				{
+					<div class="@css">
+						@if (ShowLineNumbers)
+						{
+							<span class="diff-line-number">@(line.Line2?.ToString() ?? "")</span>
+						}
+						@line.Content
+					</div>
+				}
+				else
+				{
+					<div class="@removedPlaceholder">&nbsp;</div>
+				}
+			}
+		</div>
+	</div>
+</div>
+
+@code {
+	[Parameter] public List<DiffLine> DiffLines { get; set; } = [];
+	[Parameter] public bool ShowLineNumbers { get; set; } = true;
+
+	private ElementReference _pane1;
+	private ElementReference _pane2;
+	private IJSObjectReference? _jsModule;
+
+	protected override async Task OnAfterRenderAsync(bool firstRender)
+	{
+		if (firstRender)
+		{
+			_jsModule = await JS.InvokeAsync<IJSObjectReference>("import", "./js/scrollsync.js");
+			await _jsModule.InvokeVoidAsync("syncScroll", _pane1, _pane2);
+		}
+	}
+
+	async ValueTask IAsyncDisposable.DisposeAsync()
+	{
+		if (_jsModule is not null) await _jsModule.DisposeAsync();
+	}
+}

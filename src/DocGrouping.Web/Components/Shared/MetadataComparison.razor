@@ -1,0 +1,62 @@
+@if (Doc1 is not null && Doc2 is not null)
+{
+	<div class="card mt-3">
+		<div class="card-header"><strong>Metadata Comparison</strong></div>
+		<div class="card-body p-0">
+			<table class="table table-sm mb-0">
+				<thead>
+					<tr>
+						<th>Field</th>
+						<th>Document 1</th>
+						<th>Document 2</th>
+					</tr>
+				</thead>
+				<tbody>
+					@foreach (var field in GetFields())
+					{
+						var different = field.Val1 != field.Val2;
+						<tr class="@(different ? "table-warning" : "")">
+							<td class="fw-medium">@field.Label</td>
+							<td>@field.Val1</td>
+							<td>@field.Val2</td>
+						</tr>
+					}
+				</tbody>
+			</table>
+		</div>
+	</div>
+}
+
+@code {
+	[Parameter] public Document? Doc1 { get; set; }
+	[Parameter] public Document? Doc2 { get; set; }
+
+	private record FieldInfo(string Label, string Val1, string Val2);
+
+	private List<FieldInfo> GetFields()
+	{
+		if (Doc1 is null || Doc2 is null) return [];
+		return
+		[
+			new("File Name", Doc1.FileName, Doc2.FileName),
+			new("Word Count", Doc1.WordCount.ToString(), Doc2.WordCount.ToString()),
+			new("Document Type", Doc1.DocumentType ?? "N/A", Doc2.DocumentType ?? "N/A"),
+			new("File Size", FormatBytes(Doc1.FileSizeBytes), FormatBytes(Doc2.FileSizeBytes)),
+			new("Text Hash", Doc1.TextHash[..12] + "...", Doc2.TextHash[..12] + "..."),
+			new("Fuzzy Hash", Doc1.FuzzyHash[..12] + "...", Doc2.FuzzyHash[..12] + "..."),
+			new("Bates Range", Doc1.BatesRange ?? "None", Doc2.BatesRange ?? "None"),
+			new("Source Folder", Doc1.SourceFolder ?? "N/A", Doc2.SourceFolder ?? "N/A"),
+			new("Created", Doc1.CreatedAt.ToString("g"), Doc2.CreatedAt.ToString("g")),
+		];
+	}
+
+	private const long KB = 1024;
+	private const long MB = 1024 * 1024;
+
+	private static string FormatBytes(long bytes)
+	{
+		if (bytes < KB) return $"{bytes} B";
+		if (bytes < MB) return $"{bytes / (double)KB:F1} KB";
+		return $"{bytes / (double)MB:F1} MB";
+	}
+}

@@ -1,0 +1,178 @@
+@page "/results"
+@rendermode InteractiveServer
+@inject IGroupingOrchestrator Orchestrator
+@inject IDocumentGroupRepository GroupRepo
+@inject DocumentFingerprinter Fingerprinter
+@inject NavigationManager Nav
+@inject IJSRuntime JS
+@inject ILogger<Results> Logger
+
+<PageTitle>Results - DocGrouping</PageTitle>
+
+<h3 class="mb-3"><i class="bi bi-bar-chart"></i> Grouping Results</h3>
+
+<LoadingSpinner Visible="@_loading" Message="Loading results..." />
+
+@if (_stats is not null)
+{
+	@* KPI row *@
+	<div class="row g-3 mb-4">
+		<div class="col-6 col-md-3">
+			<KpiCard Label="Total Documents" Value="@_stats.TotalDocuments.ToString()" Icon="bi-file-earmark-text" Color="#0d6efd" />
+		</div>
+		<div class="col-6 col-md-3">
+			<KpiCard Label="Total Groups" Value="@_stats.TotalGroups.ToString()" Icon="bi-collection" Color="#198754" />
+		</div>
+		<div class="col-6 col-md-3">
+			<KpiCard Label="Duplicates Found" Value="@((_stats.TotalDocuments - _stats.TotalGroups).ToString())" Icon="bi-files" Color="#fd7e14" />
+		</div>
+		<div class="col-6 col-md-3">
+			<KpiCard Label="Dedup Ratio" Value="@(_stats.DeduplicationRatio.ToString("P0"))" Icon="bi-pie-chart" Color="#6f42c1" />
+		</div>
+	</div>
+
+	@* Confidence bar *@
+	<div class="mb-4">
+		<h6 class="text-muted mb-2">Confidence Distribution</h6>
+		<ConfidenceBar Breakdown="@_stats.ConfidenceBreakdown" />
+	</div>
+
+	@* Filter and export bar *@
+	<div class="d-flex flex-wrap justify-content-between align-items-center mb-3">
+		<div class="btn-group" role="group">
+			<button class="btn @(_filter == null ? "btn-primary" : "btn-outline-primary")" @onclick="() => SetFilter(null)">
+				All (@_allGroups.Count)
+			</button>
+			<button class="btn @(_filter == "VeryHigh" ? "btn-primary" : "btn-outline-primary")" @onclick='() => SetFilter("VeryHigh")'>
+				VeryHigh
+			</button>
+			<button class="btn @(_filter == "High" ? "btn-primary" : "btn-outline-primary")" @onclick='() => SetFilter("High")'>
+				High
+			</button>
+			<button class="btn @(_filter == "Medium" ? "btn-primary" : "btn-outline-primary")" @onclick='() => SetFilter("Medium")'>
+				Medium
+			</button>
+			<button class="btn @(_filter == "None" ? "btn-primary" : "btn-outline-primary")" @onclick='() => SetFilter("None")'>
+				None
+			</button>
+		</div>
+		<div class="d-flex gap-2 mt-2 mt-md-0">
+			<button class="btn btn-outline-secondary btn-sm" @onclick="ExportJson">
+				<i class="bi bi-filetype-json"></i> Export JSON
+			</button>
+			<button class="btn btn-outline-secondary btn-sm" @onclick="ExportCsv">
+				<i class="bi bi-filetype-csv"></i> Export CSV
+			</button>
+		</div>
+	</div>
+
+	@* Group cards *@
+	@if (FilteredGroups.Count == 0)
+	{
+		<div class="alert alert-secondary text-center">
+			<i class="bi bi-inbox"></i> No groups to display.
+			@if (_allGroups.Count == 0)
+			{
+				<a href="/" class="alert-link">Upload documents first.</a>
+			}
+		</div>
+	}
+	else
+	{
+		@foreach (var group in FilteredGroups)
+		{
+			<GroupCard Group="@group" />
+		}
+	}
+}
+
+@code {
+	private StatisticsDto? _stats;
+	private List<GroupDto> _allGroups = [];
+	private string? _filter;
+	private bool _loading = true;
+
+	private List<GroupDto> FilteredGroups => _filter is null
+		? _allGroups
+		: _allGroups.Where(g => string.Equals(g.Confidence, _filter, StringComparison.OrdinalIgnoreCase)).ToList();
+
+	protected override async Task OnInitializedAsync()
+	{
+		try
+		{
+			_stats = await Orchestrator.GetStatisticsAsync();
+			var groups = await GroupRepo.GetAllAsync();
+
+			_allGroups = groups
+				.OrderByDescending(g => g.Confidence)
+				.ThenBy(g => g.GroupNumber)
+				.Select(g =>
+				{
+					var dto = new GroupDto
+					{
+						Id = g.Id,
+						GroupNumber = g.GroupNumber,
+						Confidence = g.Confidence.ToString(),
+						MatchReason = g.MatchReason,
+						DocumentCount = g.DocumentCount,
+						CanonicalFileName = g.CanonicalDocument?.FileName,
+						Documents = g.Memberships.Select(m => new DocumentDto
+						{
+							Id = m.Document.Id,
+							FileName = m.Document.FileName,
+							WordCount = m.Document.WordCount,
+							IsCanonical = m.IsCanonical,
+							PreviewText = m.Document.OriginalText.Length > 200
+								? m.Document.OriginalText[..200] + "..."
+								: m.Document.OriginalText,
+							DocumentType = m.Document.DocumentType,
+							CreatedAt = m.Document.CreatedAt
+						}).ToList()
+					};
+
+					if (g.Memberships.Count >= 2)
+					{
+						var docs = g.Memberships.OrderByDescending(m => m.IsCanonical).ToList();
+						var metrics = Fingerprinter.CalculateSimilarityMetrics(
+							docs[0].Document.NormalizedText,
+							docs[1].Document.NormalizedText);
+
+						dto.MatchExplanation = new MatchExplanationDto
+						{
+							JaccardSimilarity = metrics.JaccardSimilarity,
+							OverlapCoefficient = metrics.OverlapCoefficient,
+							FuzzySignatureMatch = metrics.FuzzySignatureJaccard,
+							CommonTokensCount = metrics.CommonTokens,
+							TotalTokensDoc1 = metrics.TokenCount1,
+							TotalTokensDoc2 = metrics.TokenCount2,
+							MatchType = g.Confidence.ToString()
+						};
+					}
+
+					return dto;
+				}).ToList();
+		}
+		catch (Exception ex)
+		{
+			Logger.LogError(ex, "Error loading results");
+		}
+		finally
+		{
+			_loading = false;
+		}
+	}
+
+	private void SetFilter(string? filter) => _filter = filter;
+
+	private async Task ExportJson()
+	{
+		var json = ExportService.ExportGroupsAsJson(FilteredGroups);
+		await ExportService.DownloadFileAsync(JS, "docgrouping-results.json", json, "application/json");
+	}
+
+	private async Task ExportCsv()
+	{
+		var csv = ExportService.ExportGroupsAsCsv(FilteredGroups);
+		await ExportService.DownloadFileAsync(JS, "docgrouping-results.csv", csv, "text/csv");
+	}
+}

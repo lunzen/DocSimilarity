@@ -1,0 +1,451 @@
+@page "/generator"
+@rendermode InteractiveServer
+@inject IDocumentGeneratorService GeneratorService
+@inject IDocumentIngestionService IngestionService
+@inject IGroupingOrchestrator Orchestrator
+@inject NavigationManager Nav
+@inject ILogger<Generator> Logger
+
+<PageTitle>Generator - DocGrouping</PageTitle>
+
+<h3 class="mb-3"><i class="bi bi-file-earmark-plus"></i> Document Generator</h3>
+
+@* Bulk generation *@
+<div class="card mb-4 border-primary">
+	<div class="card-body">
+		<div class="d-flex flex-wrap align-items-center gap-3">
+			<div>
+				<h5 class="mb-1"><i class="bi bi-lightning-fill text-primary"></i> Bulk Generate</h5>
+				<p class="text-muted small mb-0">Generate across all 10 templates with randomized OCR errors, stamps, and redactions</p>
+			</div>
+			<div class="ms-auto d-flex align-items-center gap-2">
+				<label class="form-label mb-0 fw-semibold">Count:</label>
+				<input type="number" class="form-control form-control-sm" style="width: 100px;" min="10" max="5000" @bind="_bulkCount" />
+				<button class="btn btn-primary" @onclick="BulkGenerateAndProcess" disabled="@_loading">
+					<i class="bi bi-play-fill"></i> Generate @_bulkCount Docs
+				</button>
+			</div>
+		</div>
+		@if (_loading || _logEntries.Count > 0)
+		{
+			<div class="mt-3">
+				@* Progress bar *@
+				<div class="progress mb-2" style="height: 24px;">
+					<div class="progress-bar @(_loading ? "progress-bar-striped progress-bar-animated" : "bg-success")"
+						 role="progressbar"
+						 style="@($"width: {_bulkProgressPct}%")"
+						 aria-valuenow="@_bulkProgressPct" aria-valuemin="0" aria-valuemax="100">
+						@_bulkProgressPct%
+					</div>
+				</div>
+
+				@* Current status + elapsed time *@
+				<div class="d-flex justify-content-between align-items-center mb-2">
+					<span class="fw-semibold">
+						<i class="bi bi-hourglass-split text-primary"></i> @_bulkProgress
+					</span>
+					<span class="badge bg-secondary"><i class="bi bi-stopwatch"></i> @_elapsed</span>
+				</div>
+
+				@* Status log feed *@
+				<div class="bg-dark text-light rounded p-2 font-monospace small" style="max-height: 250px; overflow-y: auto;" id="statusLog">
+					@foreach (var entry in _logEntries)
+					{
+						<div class="@entry.CssClass">@entry.Timestamp @entry.Message</div>
+					}
+				</div>
+
+				@* Metrics summary *@
+				@if (_lastMetrics is not null)
+				{
+					<div class="card mt-3 border-success">
+						<div class="card-header bg-success text-white">
+							<i class="bi bi-speedometer2"></i> Performance Metrics
+						</div>
+						<div class="card-body p-2">
+							<table class="table table-sm table-bordered mb-0 small">
+								<thead class="table-light">
+									<tr><th>Phase</th><th>Time</th><th>Result</th><th>Details</th></tr>
+								</thead>
+								<tbody>
+									<tr>
+										<td>Generation</td>
+										<td>@($"{_genSeconds:F1}s")</td>
+										<td>@_lastMetrics.TotalDocuments docs created</td>
+										<td>@($"{_lastMetrics.TotalDocuments / Math.Max(_genSeconds, 0.01):F0} docs/sec")</td>
+									</tr>
+									<tr>
+										<td>Ingestion</td>
+										<td>@($"{_ingestSeconds:F1}s")</td>
+										<td>@_lastMetrics.TotalDocuments docs ingested</td>
+										<td>@($"{_lastMetrics.TotalDocuments / Math.Max(_ingestSeconds, 0.01):F0} docs/sec")</td>
+									</tr>
+									<tr class="@(_lastMetrics.Phase1Seconds > 1 ? "table-warning" : "")">
+										<td>Phase 1 (Text Hash)</td>
+										<td>@($"{_lastMetrics.Phase1Seconds:F2}s")</td>
+										<td>@_lastMetrics.Phase1Groups VeryHigh groups</td>
+										<td>Exact normalized match</td>
+									</tr>
+									<tr class="@(_lastMetrics.Phase2Seconds > 1 ? "table-warning" : "")">
+										<td>Phase 2 (Fuzzy Hash)</td>
+										<td>@($"{_lastMetrics.Phase2Seconds:F2}s")</td>
+										<td>@_lastMetrics.Phase2Groups High groups</td>
+										<td>Top-K token match</td>
+									</tr>
+									<tr class="@(_lastMetrics.Phase3Seconds > 5 ? "table-danger" : _lastMetrics.Phase3Seconds > 1 ? "table-warning" : "")">
+										<td>Phase 3 (Pairwise)</td>
+										<td>@($"{_lastMetrics.Phase3Seconds:F2}s")</td>
+										<td>@_lastMetrics.Phase3Groups Medium groups</td>
+										<td>@($"{_lastMetrics.Phase3PairsCompared:N0} pairs @ {_lastMetrics.Phase3PairsCompared / Math.Max(_lastMetrics.Phase3Seconds, 0.01):N0}/sec ({_lastMetrics.Phase3UngroupedCount} docs)")</td>
+									</tr>
+									<tr>
+										<td>Phase 4 (Singletons)</td>
+										<td>@($"{_lastMetrics.Phase4Seconds:F2}s")</td>
+										<td>@_lastMetrics.Phase4Singletons singleton groups</td>
+										<td>No matches found</td>
+									</tr>
+									<tr class="table-dark fw-bold">
+										<td>Total</td>
+										<td>@($"{_totalSeconds:F1}s")</td>
+										<td>@_lastMetrics.TotalGroups groups</td>
+										<td>@($"{_lastMetrics.TotalDocuments / Math.Max(_totalSeconds, 0.01):F1} docs/sec end-to-end")</td>
+									</tr>
+								</tbody>
+							</table>
+						</div>
+					</div>
+				}
+			</div>
+		}
+	</div>
+</div>
+
+<hr class="mb-4" />
+
+<div class="row">
+	@* Template selection *@
+	<div class="col-md-6">
+		<h5 class="mb-2">Select Template</h5>
+		<div class="row g-2 mb-3">
+			@foreach (var template in _templates)
+			{
+				<div class="col-6">
+					<TemplateCard Template="@template"
+								  IsSelected="@(_selectedTemplate == template.TemplateId)"
+								  OnClick="() => SelectTemplate(template.TemplateId)" />
+				</div>
+			}
+		</div>
+	</div>
+
+	@* Configuration *@
+	<div class="col-md-6">
+		<h5 class="mb-2">Configuration</h5>
+		<div class="card mb-3">
+			<div class="card-body">
+				<div class="mb-3">
+					<label class="form-label">Document Count</label>
+					<input type="number" class="form-control" min="1" max="20" @bind="_request.DocumentCount" />
+				</div>
+
+				<div class="mb-3">
+					<label class="form-label">OCR Error Level</label>
+					<select class="form-select" @bind="_request.OcrErrorLevel">
+						<option value="none">None</option>
+						<option value="light">Light (1-2%)</option>
+						<option value="moderate">Moderate (3-5%)</option>
+						<option value="heavy">Heavy (5-10%)</option>
+					</select>
+				</div>
+
+				<div class="mb-3">
+					<label class="form-label">Stamps</label>
+					<div class="form-check">
+						<input class="form-check-input" type="checkbox" @bind="_request.AddBatesStamp" id="chkBates" />
+						<label class="form-check-label" for="chkBates">Bates Stamp</label>
+					</div>
+					<div class="form-check">
+						<input class="form-check-input" type="checkbox" @bind="_request.AddReceivedStamp" id="chkReceived" />
+						<label class="form-check-label" for="chkReceived">RECEIVED Stamp</label>
+					</div>
+					<div class="form-check">
+						<input class="form-check-input" type="checkbox" @bind="_request.AddFaxHeader" id="chkFax" />
+						<label class="form-check-label" for="chkFax">FAX Header</label>
+					</div>
+					<div class="form-check">
+						<input class="form-check-input" type="checkbox" @bind="_request.AddPageNumbers" id="chkPages" />
+						<label class="form-check-label" for="chkPages">Page Numbers</label>
+					</div>
+				</div>
+
+				<div class="mb-3">
+					<label class="form-label">Redaction Level</label>
+					<select class="form-select" @bind="_request.RedactionLevel">
+						<option value="none">None</option>
+						<option value="light">Light (5-10)</option>
+						<option value="moderate">Moderate (10-20)</option>
+						<option value="heavy">Heavy (20-40)</option>
+					</select>
+				</div>
+
+				<button class="btn btn-primary w-100" @onclick="GenerateAndProcess"
+						disabled="@(_loading || string.IsNullOrEmpty(_selectedTemplate))">
+					<i class="bi bi-play-fill"></i> Generate &amp; Process
+				</button>
+			</div>
+		</div>
+	</div>
+</div>
+
+@* Preview *@
+@if (!string.IsNullOrEmpty(_preview))
+{
+	<div class="card mt-3">
+		<div class="card-header"><strong>Template Preview</strong></div>
+		<div class="card-body">
+			<pre class="mb-0" style="max-height: 400px; overflow-y: auto; white-space: pre-wrap; font-size: 0.85rem;">@_preview</pre>
+		</div>
+	</div>
+}
+
+@if (!string.IsNullOrEmpty(_statusMessage))
+{
+	<div class="alert @_statusCss mt-3">@_statusMessage</div>
+}
+
+@code {
+	private List<TemplateInfo> _templates = [];
+	private string? _selectedTemplate;
+	private string? _preview;
+	private GenerateRequest _request = new() { DocumentCount = 3 };
+	private bool _loading;
+	private string? _statusMessage;
+	private string _statusCss = "alert-info";
+	private int _bulkCount = 1000;
+	private string? _bulkProgress;
+	private int _bulkProgressPct;
+	private string _elapsed = "00:00";
+	private List<LogEntry> _logEntries = [];
+	private System.Diagnostics.Stopwatch _stopwatch = new();
+	private Timer? _elapsedTimer;
+	private GroupingMetrics? _lastMetrics;
+	private double _genSeconds;
+	private double _ingestSeconds;
+	private double _totalSeconds;
+
+	private record LogEntry(string Timestamp, string Message, string CssClass);
+
+	protected override void OnInitialized()
+	{
+		_templates = GeneratorService.GetAvailableTemplates();
+	}
+
+	private void SelectTemplate(string templateId)
+	{
+		_selectedTemplate = templateId;
+		_request.TemplateId = templateId;
+		_preview = GeneratorService.PreviewTemplate(templateId);
+	}
+
+	private void Log(string message, string css = "text-light")
+	{
+		var ts = _stopwatch.Elapsed.ToString(@"mm\:ss\.f");
+		_logEntries.Add(new LogEntry($"[{ts}]", message, css));
+	}
+
+	private async Task BulkGenerateAndProcess()
+	{
+		_loading = true;
+		_logEntries.Clear();
+		_stopwatch.Restart();
+		_bulkProgressPct = 0;
+
+		// Timer to update elapsed display every second
+		_elapsedTimer = new Timer(_ =>
+		{
+			_elapsed = _stopwatch.Elapsed.ToString(@"mm\:ss");
+			InvokeAsync(StateHasChanged);
+		}, null, 0, 1000);
+
+		try
+		{
+			_lastMetrics = null;
+
+			// Step 1: Generate
+			_bulkProgress = $"Generating {_bulkCount} documents from 10 templates...";
+			Log($"Starting bulk generation of {_bulkCount} documents");
+			Log($"Using 10 templates with randomized OCR, stamps, and redactions");
+			_bulkProgressPct = 2;
+			StateHasChanged();
+			await Task.Delay(1);
+
+			var genStart = _stopwatch.Elapsed;
+			var generated = GeneratorService.GenerateBulkDocuments(_bulkCount);
+			_genSeconds = (_stopwatch.Elapsed - genStart).TotalSeconds;
+
+			Log($"Generated {generated.Count} documents in {_genSeconds:F1}s ({generated.Count / Math.Max(_genSeconds, 0.01):F0} docs/sec)", "text-success");
+			_bulkProgressPct = 10;
+			StateHasChanged();
+			await Task.Delay(1);
+
+			// Step 2: Ingest
+			_bulkProgress = $"Ingesting {generated.Count} documents into database...";
+			Log($"Beginning database ingestion (normalizing, fingerprinting, hashing)...");
+			StateHasChanged();
+			await Task.Delay(1);
+
+			var batchSize = 25;
+			var ingestStart = _stopwatch.Elapsed;
+			for (int i = 0; i < generated.Count; i += batchSize)
+			{
+				var end = Math.Min(i + batchSize, generated.Count);
+				for (int j = i; j < end; j++)
+				{
+					await IngestionService.IngestTextAsync(generated[j].FileName, generated[j].Content);
+				}
+				_bulkProgressPct = 10 + (int)(50.0 * end / generated.Count);
+				_bulkProgress = $"Ingesting... {end} / {generated.Count}";
+
+				var elapsed = (_stopwatch.Elapsed - ingestStart).TotalSeconds;
+				var rate = end / Math.Max(elapsed, 0.01);
+				var eta = (generated.Count - end) / Math.Max(rate, 1);
+
+				if (end % 50 == 0 || end == generated.Count)
+				{
+					Log($"Ingested {end}/{generated.Count} | {rate:F0} docs/sec | ~{eta:F0}s remaining");
+				}
+				StateHasChanged();
+				await Task.Delay(1);
+			}
+
+			_ingestSeconds = (_stopwatch.Elapsed - ingestStart).TotalSeconds;
+			Log($"Ingestion complete in {_ingestSeconds:F1}s ({generated.Count / Math.Max(_ingestSeconds, 0.01):F0} docs/sec)", "text-success");
+
+			// Step 3: Grouping
+			_bulkProgress = "Grouping documents...";
+			_bulkProgressPct = 62;
+			Log("Starting grouping engine...");
+			StateHasChanged();
+			await Task.Delay(1);
+
+			var groupStart = _stopwatch.Elapsed;
+			var progress = new Progress<GroupingProgress>(p =>
+			{
+				_bulkProgress = $"Grouping: {p.Phase} - {p.Message}";
+				_bulkProgressPct = 62 + (int)(p.PercentComplete * 0.36);
+				Log($"[{p.Phase}] {p.Message}",
+					p.Phase == "Done" ? "text-success" : "text-info");
+				if (p.Metrics is not null)
+				{
+					_lastMetrics = p.Metrics;
+				}
+				InvokeAsync(StateHasChanged);
+			});
+
+			await Orchestrator.GroupAllDocumentsAsync(progress);
+
+			var groupTime = (_stopwatch.Elapsed - groupStart).TotalSeconds;
+			_stopwatch.Stop();
+			_totalSeconds = _stopwatch.Elapsed.TotalSeconds;
+			Log($"Grouping complete in {groupTime:F1}s", "text-success");
+			Log($"Total elapsed: {_totalSeconds:F1}s", "text-warning");
+
+			_bulkProgressPct = 100;
+			_bulkProgress = "Done! See metrics below.";
+			_loading = false;
+			StateHasChanged();
+		}
+		catch (Exception ex)
+		{
+			Logger.LogError(ex, "Error in bulk generation");
+			Log($"ERROR: {ex.Message}", "text-danger");
+			_statusMessage = $"Error: {ex.Message}";
+			_statusCss = "alert-danger";
+			_loading = false;
+			_stopwatch.Stop();
+		}
+		finally
+		{
+			_elapsedTimer?.Dispose();
+			_elapsedTimer = null;
+		}
+	}
+
+	private async Task GenerateAndProcess()
+	{
+		if (string.IsNullOrEmpty(_selectedTemplate)) return;
+
+		_loading = true;
+		_logEntries.Clear();
+		_stopwatch.Restart();
+		_bulkProgressPct = 0;
+
+		_elapsedTimer = new Timer(_ =>
+		{
+			_elapsed = _stopwatch.Elapsed.ToString(@"mm\:ss");
+			InvokeAsync(StateHasChanged);
+		}, null, 0, 1000);
+
+		try
+		{
+			_bulkProgress = "Generating documents...";
+			Log($"Generating {_request.DocumentCount} document(s) from template '{_selectedTemplate}'");
+			_bulkProgressPct = 10;
+			StateHasChanged();
+			await Task.Delay(1);
+
+			_request.TemplateId = _selectedTemplate;
+			var generated = GeneratorService.GenerateDocuments(_request);
+
+			Log($"Generated {generated.Count} document(s)", "text-success");
+			_bulkProgress = $"Ingesting {generated.Count} document(s)...";
+			_bulkProgressPct = 30;
+			StateHasChanged();
+			await Task.Delay(1);
+
+			foreach (var doc in generated)
+			{
+				await IngestionService.IngestTextAsync(doc.FileName, doc.Content);
+				Log($"Ingested: {doc.FileName}");
+			}
+
+			_bulkProgress = "Grouping all documents...";
+			_bulkProgressPct = 70;
+			Log("Starting grouping...");
+			StateHasChanged();
+			await Task.Delay(1);
+
+			var progress = new Progress<GroupingProgress>(p =>
+			{
+				_bulkProgress = $"Grouping: {p.Phase}";
+				_bulkProgressPct = 70 + (int)(p.PercentComplete * 0.28);
+				Log($"[{p.Phase}] {p.Message}", "text-info");
+				InvokeAsync(StateHasChanged);
+			});
+
+			await Orchestrator.GroupAllDocumentsAsync(progress);
+
+			_stopwatch.Stop();
+			Log($"Complete in {_stopwatch.Elapsed.TotalSeconds:F1}s", "text-success");
+			_bulkProgressPct = 100;
+			StateHasChanged();
+			await Task.Delay(500);
+
+			Nav.NavigateTo("/results");
+		}
+		catch (Exception ex)
+		{
+			Logger.LogError(ex, "Error generating documents");
+			Log($"ERROR: {ex.Message}", "text-danger");
+			_statusMessage = $"Error: {ex.Message}";
+			_statusCss = "alert-danger";
+			_loading = false;
+			_stopwatch.Stop();
+		}
+		finally
+		{
+			_elapsedTimer?.Dispose();
+			_elapsedTimer = null;
+		}
+	}
+}

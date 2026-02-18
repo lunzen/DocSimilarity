@@ -1,0 +1,17 @@
+C:\Temp\DocGrouping\src\DocGrouping.Infrastructure\bin\Debug\net10.0\DocGrouping.Infrastructure.deps.json
+C:\Temp\DocGrouping\src\DocGrouping.Infrastructure\bin\Debug\net10.0\DocGrouping.Infrastructure.dll
+C:\Temp\DocGrouping\src\DocGrouping.Infrastructure\bin\Debug\net10.0\DocGrouping.Infrastructure.pdb
+C:\Temp\DocGrouping\src\DocGrouping.Infrastructure\bin\Debug\net10.0\DocGrouping.Application.dll
+C:\Temp\DocGrouping\src\DocGrouping.Infrastructure\bin\Debug\net10.0\DocGrouping.Domain.dll
+C:\Temp\DocGrouping\src\DocGrouping.Infrastructure\bin\Debug\net10.0\DocGrouping.Domain.pdb
+C:\Temp\DocGrouping\src\DocGrouping.Infrastructure\bin\Debug\net10.0\DocGrouping.Application.pdb
+C:\Temp\DocGrouping\src\DocGrouping.Infrastructure\obj\Debug\net10.0\DocGrouping.Infrastructure.csproj.AssemblyReference.cache
+C:\Temp\DocGrouping\src\DocGrouping.Infrastructure\obj\Debug\net10.0\DocGrouping.Infrastructure.GeneratedMSBuildEditorConfig.editorconfig
+C:\Temp\DocGrouping\src\DocGrouping.Infrastructure\obj\Debug\net10.0\DocGrouping.Infrastructure.AssemblyInfoInputs.cache
+C:\Temp\DocGrouping\src\DocGrouping.Infrastructure\obj\Debug\net10.0\DocGrouping.Infrastructure.AssemblyInfo.cs
+C:\Temp\DocGrouping\src\DocGrouping.Infrastructure\obj\Debug\net10.0\DocGrouping.Infrastructure.csproj.CoreCompileInputs.cache
+C:\Temp\DocGrouping\src\DocGrouping.Infrastructure\obj\Debug\net10.0\DocGroup.70054A05.Up2Date
+C:\Temp\DocGrouping\src\DocGrouping.Infrastructure\obj\Debug\net10.0\DocGrouping.Infrastructure.dll
+C:\Temp\DocGrouping\src\DocGrouping.Infrastructure\obj\Debug\net10.0\refint\DocGrouping.Infrastructure.dll
+C:\Temp\DocGrouping\src\DocGrouping.Infrastructure\obj\Debug\net10.0\DocGrouping.Infrastructure.pdb
+C:\Temp\DocGrouping\src\DocGrouping.Infrastructure\obj\Debug\net10.0\ref\DocGrouping.Infrastructure.dll

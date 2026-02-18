@@ -1,0 +1,44 @@
+@if (Explanation is not null)
+{
+	<div class="row g-2 mt-2">
+		<div class="col-6 col-md-3">
+			<div class="border rounded p-2 text-center">
+				<div class="small text-muted">Jaccard</div>
+				<div class="fw-bold">@Explanation.JaccardSimilarity.ToString("P1")</div>
+			</div>
+		</div>
+		<div class="col-6 col-md-3">
+			<div class="border rounded p-2 text-center">
+				<div class="small text-muted">Overlap</div>
+				<div class="fw-bold">@Explanation.OverlapCoefficient.ToString("P1")</div>
+			</div>
+		</div>
+		<div class="col-6 col-md-3">
+			<div class="border rounded p-2 text-center">
+				<div class="small text-muted">Fuzzy Sig</div>
+				<div class="fw-bold">@Explanation.FuzzySignatureMatch.ToString("P1")</div>
+			</div>
+		</div>
+		<div class="col-6 col-md-3">
+			<div class="border rounded p-2 text-center">
+				<div class="small text-muted">Common Tokens</div>
+				<div class="fw-bold">@Explanation.CommonTokensCount</div>
+			</div>
+		</div>
+	</div>
+
+	@if (Explanation.CommonKeywords.Count > 0)
+	{
+		<div class="mt-2">
+			<small class="text-muted">Keywords: </small>
+			@foreach (var kw in Explanation.CommonKeywords.Take(10))
+			{
+				<span class="badge bg-light text-dark border me-1">@kw</span>
+			}
+		</div>
+	}
+}
+
+@code {
+	[Parameter] public MatchExplanationDto? Explanation { get; set; }
+}
