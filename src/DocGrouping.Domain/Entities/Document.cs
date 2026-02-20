@@ -21,6 +21,7 @@ public class Document
 	public string? SourceFolder { get; set; }
 	public JsonDocument? Tags { get; set; }
 	public JsonDocument? CustomMetadata { get; set; }
+	public bool IsCanonicalReference { get; set; }
 	public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
 
 	// Navigation

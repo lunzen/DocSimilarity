@@ -85,6 +85,7 @@ public class DocumentGeneratorService(
 			{
 				FileName = fileName,
 				Content = content,
+				DocumentType = template.TemplateId,
 			});
 		}
 
@@ -158,6 +159,7 @@ public class DocumentGeneratorService(
 				{
 					FileName = fileName,
 					Content = content,
+					DocumentType = template.TemplateId,
 				});
 			}
 		}

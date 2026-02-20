@@ -432,6 +432,190 @@ public class GroupingOrchestrator(
 		return singletonGroup;
 	}
 
+	public async Task<List<CanonicalMatchResult>> ClassifyAgainstCanonicalsAsync(
+		List<Guid>? targetDocumentIds = null,
+		IProgress<GroupingProgress>? progress = null,
+		CancellationToken ct = default)
+	{
+		var totalSw = Stopwatch.StartNew();
+		logger.LogInformation("Starting canonical classification");
+		progress?.Report(new GroupingProgress("Init", "Loading canonical references...", 2));
+
+		// Load all canonicals and bucket by DocumentType
+		var allCanonicals = await documentRepository.GetAllCanonicalsAsync(ct);
+		if (allCanonicals.Count == 0)
+		{
+			logger.LogWarning("No canonical reference documents found");
+			progress?.Report(new GroupingProgress("Done", "No canonical references found. Mark documents as canonical first.", 100));
+			return [];
+		}
+
+		var canonicalsByType = allCanonicals
+			.Where(c => !string.IsNullOrEmpty(c.DocumentType))
+			.GroupBy(c => c.DocumentType!)
+			.ToDictionary(g => g.Key, g => g.ToList());
+
+		logger.LogInformation("Loaded {Count} canonicals across {Types} document types",
+			allCanonicals.Count, canonicalsByType.Count);
+		progress?.Report(new GroupingProgress("Init",
+			$"Loaded {allCanonicals.Count} canonicals across {canonicalsByType.Count} types", 5));
+
+		// Clear existing groups before reclassifying
+		await groupRepository.DeleteAllAsync(ct);
+
+		// Load target documents
+		List<Document> targetDocs;
+		if (targetDocumentIds is { Count: > 0 })
+		{
+			targetDocs = [];
+			foreach (var id in targetDocumentIds)
+			{
+				var doc = await documentRepository.GetByIdAsync(id, ct);
+				if (doc != null && !doc.IsCanonicalReference)
+					targetDocs.Add(doc);
+			}
+		}
+		else
+		{
+			var allDocs = await documentRepository.GetAllAsync(ct);
+			targetDocs = allDocs.Where(d => !d.IsCanonicalReference).ToList();
+		}
+
+		logger.LogInformation("Classifying {Count} target documents against canonicals", targetDocs.Count);
+		progress?.Report(new GroupingProgress("Classify",
+			$"Classifying {targetDocs.Count} documents...", 10));
+
+		var results = new List<CanonicalMatchResult>();
+		var nextGroupNumber = 1;
+
+		// First, create groups for each canonical (so matched docs join canonical's group)
+		var canonicalGroups = new Dictionary<Guid, DocumentGroup>();
+		foreach (var canonical in allCanonicals)
+		{
+			var group = CreateGroup(
+				nextGroupNumber++,
+				[canonical],
+				MatchConfidence.VeryHigh,
+				"Canonical reference document",
+				canonical,
+				1.0m);
+			canonicalGroups[canonical.Id] = group;
+			await groupRepository.AddAsync(group, ct);
+		}
+
+		for (int i = 0; i < targetDocs.Count; i++)
+		{
+			var doc = targetDocs[i];
+
+			// Find the right bucket of canonicals to compare against
+			List<Document> candidates;
+			if (!string.IsNullOrEmpty(doc.DocumentType) && canonicalsByType.TryGetValue(doc.DocumentType, out var typedCandidates))
+			{
+				candidates = typedCandidates;
+			}
+			else
+			{
+				// Fallback: compare against all canonicals
+				candidates = allCanonicals;
+			}
+
+			var matchResult = FindBestCanonicalMatch(doc, candidates);
+
+			if (matchResult.HasValue)
+			{
+				var (matchedCanonical, confidence, similarity, reason) = matchResult.Value;
+
+				// Add to the canonical's group
+				var group = canonicalGroups[matchedCanonical.Id];
+				AddToGroup(group, doc, similarity);
+				await groupRepository.UpdateAsync(group, ct);
+
+				results.Add(new CanonicalMatchResult(
+					doc.Id, doc.FileName, doc.DocumentType,
+					matchedCanonical.Id, matchedCanonical.FileName,
+					confidence, similarity, reason));
+			}
+			else
+			{
+				// No match → singleton group
+				var singletonGroup = CreateGroup(
+					nextGroupNumber++,
+					[doc],
+					MatchConfidence.None,
+					"No canonical match found",
+					doc,
+					0m);
+				await groupRepository.AddAsync(singletonGroup, ct);
+
+				results.Add(new CanonicalMatchResult(
+					doc.Id, doc.FileName, doc.DocumentType,
+					null, null,
+					MatchConfidence.None, 0m, "No canonical match found"));
+			}
+
+			if ((i + 1) % 10 == 0 || i == targetDocs.Count - 1)
+			{
+				var pct = 10 + (int)(85.0 * (i + 1) / targetDocs.Count);
+				progress?.Report(new GroupingProgress("Classify",
+					$"Classified {i + 1}/{targetDocs.Count} documents...", pct));
+			}
+		}
+
+		totalSw.Stop();
+		var matched = results.Count(r => r.MatchedCanonicalId.HasValue);
+		logger.LogInformation(
+			"Canonical classification complete: {Matched}/{Total} matched in {Time:F2}s",
+			matched, results.Count, totalSw.Elapsed.TotalSeconds);
+
+		progress?.Report(new GroupingProgress("Done",
+			$"Complete: {matched}/{results.Count} documents matched to canonicals in {totalSw.Elapsed.TotalSeconds:F1}s", 100));
+
+		return results;
+	}
+
+	private (Document Canonical, MatchConfidence Confidence, decimal Similarity, string Reason)? FindBestCanonicalMatch(
+		Document doc, List<Document> candidates)
+	{
+		// Phase 1: Exact text hash match
+		var textHashMatch = candidates.FirstOrDefault(c => c.TextHash == doc.TextHash);
+		if (textHashMatch != null)
+		{
+			return (textHashMatch, MatchConfidence.VeryHigh, 1.0m, "Exact text match with canonical");
+		}
+
+		// Phase 2: Fuzzy hash match
+		var fuzzyHashMatch = candidates.FirstOrDefault(c => c.FuzzyHash == doc.FuzzyHash);
+		if (fuzzyHashMatch != null)
+		{
+			return (fuzzyHashMatch, MatchConfidence.High, 0.9m, "Fuzzy hash match with canonical");
+		}
+
+		// Phase 3: Best Jaccard >= 0.70 (no upper bound, unlike batch mode)
+		Document? bestCandidate = null;
+		decimal bestSimilarity = 0m;
+
+		foreach (var candidate in candidates)
+		{
+			var metrics = fingerprinter.CalculateSimilarityMetrics(
+				doc.NormalizedText, candidate.NormalizedText);
+
+			if (metrics.JaccardSimilarity >= 0.70 && (decimal)metrics.JaccardSimilarity > bestSimilarity)
+			{
+				bestSimilarity = (decimal)metrics.JaccardSimilarity;
+				bestCandidate = candidate;
+			}
+		}
+
+		if (bestCandidate != null)
+		{
+			var confidence = bestSimilarity >= 0.85m ? MatchConfidence.High : MatchConfidence.Medium;
+			return (bestCandidate, confidence, bestSimilarity,
+				$"Jaccard similarity {bestSimilarity:P1} with canonical");
+		}
+
+		return null;
+	}
+
 	public async Task<StatisticsDto> GetStatisticsAsync(CancellationToken ct = default)
 	{
 		var groups = await groupRepository.GetAllAsync(ct);

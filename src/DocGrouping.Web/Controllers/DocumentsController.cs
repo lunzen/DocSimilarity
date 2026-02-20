@@ -82,10 +82,75 @@ public class DocumentsController(
 			d.FileName,
 			d.WordCount,
 			d.DocumentType,
+			d.IsCanonicalReference,
 			text_hash = d.TextHash[..16] + "...",
 			fuzzy_hash = d.FuzzyHash[..16] + "...",
 			d.CreatedAt
 		}));
+	}
+
+	[HttpGet("canonicals")]
+	public async Task<IActionResult> GetCanonicals(CancellationToken ct)
+	{
+		var canonicals = await documentRepository.GetAllCanonicalsAsync(ct);
+		var grouped = canonicals
+			.GroupBy(d => d.DocumentType ?? "(none)")
+			.OrderBy(g => g.Key)
+			.Select(g => new
+			{
+				DocumentType = g.Key,
+				Documents = g.Select(d => new
+				{
+					d.Id,
+					d.FileName,
+					d.WordCount,
+					d.DocumentType,
+					d.CreatedAt
+				})
+			});
+
+		return Ok(grouped);
+	}
+
+	[HttpPost("{id:guid}/set-canonical")]
+	public async Task<IActionResult> SetCanonical(Guid id, [FromBody] SetCanonicalRequest request, CancellationToken ct)
+	{
+		var doc = await documentRepository.GetByIdAsync(id, ct);
+		if (doc == null) return NotFound();
+
+		doc.IsCanonicalReference = request.IsCanonical;
+		await documentRepository.UpdateAsync(doc, ct);
+
+		return Ok(new { doc.Id, doc.FileName, doc.IsCanonicalReference });
+	}
+
+	[HttpPost("classify-against-canonicals")]
+	public async Task<IActionResult> ClassifyAgainstCanonicals([FromBody] ClassifyRequest? request, CancellationToken ct)
+	{
+		var sw = System.Diagnostics.Stopwatch.StartNew();
+		var results = await groupingOrchestrator.ClassifyAgainstCanonicalsAsync(
+			request?.DocumentIds, ct: ct);
+		sw.Stop();
+
+		var matched = results.Count(r => r.MatchedCanonicalId.HasValue);
+		return Ok(new
+		{
+			total = results.Count,
+			matched,
+			unmatched = results.Count - matched,
+			processing_time_seconds = sw.Elapsed.TotalSeconds,
+			results = results.Select(r => new
+			{
+				r.DocumentId,
+				r.FileName,
+				r.DocumentType,
+				r.MatchedCanonicalId,
+				r.MatchedCanonicalFileName,
+				Confidence = r.Confidence.ToString(),
+				r.SimilarityScore,
+				r.MatchReason
+			})
+		});
 	}
 
 	[HttpGet("{id:guid}")]
@@ -114,4 +179,14 @@ public class DocumentsController(
 public class LoadSamplesRequest
 {
 	public string? SampleDirectory { get; set; }
+}
+
+public class SetCanonicalRequest
+{
+	public bool IsCanonical { get; set; }
+}
+
+public class ClassifyRequest
+{
+	public List<Guid>? DocumentIds { get; set; }
 }

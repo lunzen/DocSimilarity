@@ -2,6 +2,7 @@
 @rendermode InteractiveServer
 @inject IDocumentGeneratorService GeneratorService
 @inject IDocumentIngestionService IngestionService
+@inject IDocumentRepository DocumentRepo
 @inject IGroupingOrchestrator Orchestrator
 @inject NavigationManager Nav
 @inject ILogger<Generator> Logger
@@ -19,6 +20,10 @@
 				<p class="text-muted small mb-0">Generate across all 10 templates with randomized OCR errors, stamps, and redactions</p>
 			</div>
 			<div class="ms-auto d-flex align-items-center gap-2">
+				<div class="form-check me-2">
+					<input class="form-check-input" type="checkbox" @bind="_bulkMarkCanonical" id="chkBulkCanonical" />
+					<label class="form-check-label" for="chkBulkCanonical">Mark as canonical</label>
+				</div>
 				<label class="form-label mb-0 fw-semibold">Count:</label>
 				<input type="number" class="form-control form-control-sm" style="width: 100px;" min="10" max="5000" @bind="_bulkCount" />
 				<button class="btn btn-primary" @onclick="BulkGenerateAndProcess" disabled="@_loading">
@@ -188,6 +193,11 @@
 					</select>
 				</div>
 
+				<div class="form-check mb-3">
+					<input class="form-check-input" type="checkbox" @bind="_singleMarkCanonical" id="chkSingleCanonical" />
+					<label class="form-check-label" for="chkSingleCanonical">Mark as canonical</label>
+				</div>
+
 				<button class="btn btn-primary w-100" @onclick="GenerateAndProcess"
 						disabled="@(_loading || string.IsNullOrEmpty(_selectedTemplate))">
 					<i class="bi bi-play-fill"></i> Generate &amp; Process
@@ -222,6 +232,8 @@
 	private string? _statusMessage;
 	private string _statusCss = "alert-info";
 	private int _bulkCount = 1000;
+	private bool _bulkMarkCanonical;
+	private bool _singleMarkCanonical;
 	private string? _bulkProgress;
 	private int _bulkProgressPct;
 	private string _elapsed = "00:00";
@@ -301,7 +313,7 @@
 				var end = Math.Min(i + batchSize, generated.Count);
 				for (int j = i; j < end; j++)
 				{
-					await IngestionService.IngestTextAsync(generated[j].FileName, generated[j].Content);
+					await IngestionService.IngestTextAsync(generated[j].FileName, generated[j].Content, generated[j].DocumentType);
 				}
 				_bulkProgressPct = 10 + (int)(50.0 * end / generated.Count);
 				_bulkProgress = $"Ingesting... {end} / {generated.Count}";
@@ -320,6 +332,23 @@
 
 			_ingestSeconds = (_stopwatch.Elapsed - ingestStart).TotalSeconds;
 			Log($"Ingestion complete in {_ingestSeconds:F1}s ({generated.Count / Math.Max(_ingestSeconds, 0.01):F0} docs/sec)", "text-success");
+
+			// Step 2.5: Mark generated docs as canonical if requested
+			if (_bulkMarkCanonical)
+			{
+				var allDocs = await DocumentRepo.GetAllAsync();
+				var generatedNames = generated.Select(g => g.FileName).ToHashSet();
+				var marked = 0;
+				foreach (var doc in allDocs.Where(d => generatedNames.Contains(d.FileName) && !d.IsCanonicalReference))
+				{
+					doc.IsCanonicalReference = true;
+					await DocumentRepo.UpdateAsync(doc);
+					marked++;
+				}
+				Log($"Marked {marked} generated documents as canonical", "text-success");
+				StateHasChanged();
+				await Task.Delay(1);
+			}
 
 			// Step 3: Grouping
 			_bulkProgress = "Grouping documents...";
@@ -405,8 +434,20 @@
 
 			foreach (var doc in generated)
 			{
-				await IngestionService.IngestTextAsync(doc.FileName, doc.Content);
+				await IngestionService.IngestTextAsync(doc.FileName, doc.Content, doc.DocumentType);
 				Log($"Ingested: {doc.FileName}");
+			}
+
+			if (_singleMarkCanonical)
+			{
+				var allDocs = await DocumentRepo.GetAllAsync();
+				var generatedNames = generated.Select(g => g.FileName).ToHashSet();
+				foreach (var doc in allDocs.Where(d => generatedNames.Contains(d.FileName) && !d.IsCanonicalReference))
+				{
+					doc.IsCanonicalReference = true;
+					await DocumentRepo.UpdateAsync(doc);
+				}
+				Log($"Marked {generated.Count} document(s) as canonical", "text-success");
 			}
 
 			_bulkProgress = "Grouping all documents...";

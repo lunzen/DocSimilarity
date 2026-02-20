@@ -1,5 +1,6 @@
 using DocGrouping.Application.DTOs;
 using DocGrouping.Domain.Entities;
+using DocGrouping.Domain.Enums;
 
 namespace DocGrouping.Application.Interfaces;
 
@@ -8,8 +9,19 @@ public interface IGroupingOrchestrator
 	Task<List<DocumentGroup>> GroupAllDocumentsAsync(CancellationToken ct = default);
 	Task<List<DocumentGroup>> GroupAllDocumentsAsync(IProgress<GroupingProgress> progress, CancellationToken ct = default);
 	Task<DocumentGroup> GroupSingleDocumentAsync(Document document, CancellationToken ct = default);
+	Task<List<CanonicalMatchResult>> ClassifyAgainstCanonicalsAsync(List<Guid>? targetDocumentIds = null, IProgress<GroupingProgress>? progress = null, CancellationToken ct = default);
 	Task<StatisticsDto> GetStatisticsAsync(CancellationToken ct = default);
 }
+
+public record CanonicalMatchResult(
+	Guid DocumentId,
+	string FileName,
+	string? DocumentType,
+	Guid? MatchedCanonicalId,
+	string? MatchedCanonicalFileName,
+	MatchConfidence Confidence,
+	decimal SimilarityScore,
+	string MatchReason);
 
 public record GroupingProgress(string Phase, string Message, int PercentComplete, GroupingMetrics? Metrics = null);
 

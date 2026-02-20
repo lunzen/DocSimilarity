@@ -1,0 +1,249 @@
+@page "/canonicals"
+@rendermode InteractiveServer
+@inject IDocumentRepository DocumentRepo
+@inject IGroupingOrchestrator Orchestrator
+@inject NavigationManager Nav
+@inject ILogger<Canonicals> Logger
+
+<PageTitle>Canonicals - DocGrouping</PageTitle>
+
+<h3 class="mb-3"><i class="bi bi-bullseye"></i> Canonical References</h3>
+
+<LoadingSpinner Visible="@_loading" Message="@_loadingMessage" />
+
+@* KPI Row *@
+<div class="row g-3 mb-3">
+	<div class="col-md-3">
+		<div class="card text-center border-primary">
+			<div class="card-body py-2">
+				<div class="fs-3 fw-bold text-primary">@_canonicalCount</div>
+				<div class="small text-muted">Canonical Documents</div>
+			</div>
+		</div>
+	</div>
+	<div class="col-md-3">
+		<div class="card text-center border-success">
+			<div class="card-body py-2">
+				<div class="fs-3 fw-bold text-success">@_typesCovered</div>
+				<div class="small text-muted">Types Covered</div>
+			</div>
+		</div>
+	</div>
+	<div class="col-md-3">
+		<div class="card text-center border-warning">
+			<div class="card-body py-2">
+				<div class="fs-3 fw-bold text-warning">@_unclassifiedCount</div>
+				<div class="small text-muted">Non-Canonical Docs</div>
+			</div>
+		</div>
+	</div>
+	<div class="col-md-3">
+		<div class="card text-center border-secondary">
+			<div class="card-body py-2">
+				<div class="fs-3 fw-bold">@_totalCount</div>
+				<div class="small text-muted">Total Documents</div>
+			</div>
+		</div>
+	</div>
+</div>
+
+@if (_canonicalCount == 0)
+{
+	<div class="alert alert-warning">
+		<i class="bi bi-exclamation-triangle me-2"></i>
+		<strong>No canonical references set.</strong> Toggle documents below as canonical to enable classification mode.
+	</div>
+}
+
+@* Action buttons *@
+<div class="d-flex gap-2 mb-3">
+	<button class="btn btn-success" @onclick="ClassifyAgainstCanonicals" disabled="@(_loading || _canonicalCount == 0)">
+		<i class="bi bi-bullseye"></i> Classify Against Canonicals
+	</button>
+	<div class="ms-auto">
+		<select class="form-select form-select-sm d-inline-block" style="width: 200px;" @bind="_typeFilter">
+			<option value="">All Types</option>
+			@foreach (var type in _allTypes)
+			{
+				<option value="@type">@type</option>
+			}
+		</select>
+	</div>
+</div>
+
+@* Document Table *@
+@if (_documents.Count > 0)
+{
+	<div class="card">
+		<div class="card-body p-0">
+			<table class="table table-sm table-hover mb-0">
+				<thead class="table-light">
+					<tr>
+						<th style="width: 50px;">
+							<input type="checkbox" class="form-check-input"
+								   checked="@_allFilteredSelected"
+								   @onchange="ToggleSelectAll"
+								   disabled="@_loading"
+								   title="Select / deselect all" />
+						</th>
+						<th>File Name</th>
+						<th>Document Type</th>
+						<th>Words</th>
+						<th>Created</th>
+					</tr>
+				</thead>
+				<tbody>
+					@foreach (var doc in FilteredDocuments)
+					{
+						<tr class="@(doc.IsCanonicalReference ? "table-success" : "")">
+							<td class="text-center">
+								<input type="checkbox" class="form-check-input"
+									   checked="@doc.IsCanonicalReference"
+									   @onchange="@(e => ToggleCanonical(doc, (bool)(e.Value ?? false)))"
+									   disabled="@_loading" />
+							</td>
+							<td>@doc.FileName</td>
+							<td>
+								@if (!string.IsNullOrEmpty(doc.DocumentType))
+								{
+									<span class="badge bg-info text-dark">@doc.DocumentType</span>
+								}
+								else
+								{
+									<span class="badge bg-light text-muted">(none)</span>
+								}
+							</td>
+							<td>@doc.WordCount</td>
+							<td>@doc.CreatedAt.LocalDateTime.ToString("g")</td>
+						</tr>
+					}
+				</tbody>
+			</table>
+		</div>
+	</div>
+}
+else
+{
+	<div class="alert alert-secondary">
+		<i class="bi bi-info-circle me-2"></i>
+		No documents in database. Generate or upload documents first.
+	</div>
+}
+
+@if (!string.IsNullOrEmpty(_statusMessage))
+{
+	<div class="alert @_statusCss mt-3">@_statusMessage</div>
+}
+
+@code {
+	private List<Document> _documents = [];
+	private bool _loading;
+	private string _loadingMessage = "Processing...";
+	private string? _statusMessage;
+	private string _statusCss = "alert-info";
+	private string _typeFilter = "";
+	private List<string> _allTypes = [];
+
+	private int _canonicalCount;
+	private int _typesCovered;
+	private int _unclassifiedCount;
+	private int _totalCount;
+
+	private IEnumerable<Document> FilteredDocuments =>
+		string.IsNullOrEmpty(_typeFilter)
+			? _documents
+			: _documents.Where(d => d.DocumentType == _typeFilter);
+
+	private bool _allFilteredSelected => FilteredDocuments.Any() && FilteredDocuments.All(d => d.IsCanonicalReference);
+
+	protected override async Task OnInitializedAsync()
+	{
+		await LoadDocuments();
+	}
+
+	private async Task LoadDocuments()
+	{
+		_documents = await DocumentRepo.GetAllAsync();
+		_documents = _documents.OrderByDescending(d => d.IsCanonicalReference)
+			.ThenBy(d => d.DocumentType)
+			.ThenBy(d => d.FileName)
+			.ToList();
+
+		_totalCount = _documents.Count;
+		_canonicalCount = _documents.Count(d => d.IsCanonicalReference);
+		_unclassifiedCount = _documents.Count(d => !d.IsCanonicalReference);
+		_typesCovered = _documents
+			.Where(d => d.IsCanonicalReference && !string.IsNullOrEmpty(d.DocumentType))
+			.Select(d => d.DocumentType)
+			.Distinct()
+			.Count();
+		_allTypes = _documents
+			.Where(d => !string.IsNullOrEmpty(d.DocumentType))
+			.Select(d => d.DocumentType!)
+			.Distinct()
+			.OrderBy(t => t)
+			.ToList();
+	}
+
+	private async Task ToggleSelectAll(ChangeEventArgs e)
+	{
+		var setCanonical = (bool)(e.Value ?? false);
+		var toUpdate = FilteredDocuments.Where(d => d.IsCanonicalReference != setCanonical).ToList();
+		foreach (var doc in toUpdate)
+		{
+			doc.IsCanonicalReference = setCanonical;
+		}
+		if (toUpdate.Count > 0)
+		{
+			await DocumentRepo.UpdateRangeAsync(toUpdate);
+		}
+		UpdateKpis();
+	}
+
+	private void UpdateKpis()
+	{
+		_canonicalCount = _documents.Count(d => d.IsCanonicalReference);
+		_unclassifiedCount = _documents.Count(d => !d.IsCanonicalReference);
+		_typesCovered = _documents
+			.Where(d => d.IsCanonicalReference && !string.IsNullOrEmpty(d.DocumentType))
+			.Select(d => d.DocumentType)
+			.Distinct()
+			.Count();
+	}
+
+	private async Task ToggleCanonical(Document doc, bool isCanonical)
+	{
+		doc.IsCanonicalReference = isCanonical;
+		await DocumentRepo.UpdateAsync(doc);
+		UpdateKpis();
+	}
+
+	private async Task ClassifyAgainstCanonicals()
+	{
+		_loading = true;
+		_loadingMessage = "Classifying documents against canonical references...";
+		_statusMessage = null;
+		StateHasChanged();
+
+		try
+		{
+			var results = await Orchestrator.ClassifyAgainstCanonicalsAsync();
+			var matched = results.Count(r => r.MatchedCanonicalId.HasValue);
+
+			_statusMessage = $"Classification complete: {matched}/{results.Count} documents matched to canonicals.";
+			_statusCss = "alert-success";
+
+			Nav.NavigateTo("/results");
+		}
+		catch (Exception ex)
+		{
+			Logger.LogError(ex, "Error classifying against canonicals");
+			_statusMessage = $"Error: {ex.Message}";
+			_statusCss = "alert-danger";
+		}
+		finally
+		{
+			_loading = false;
+		}
+	}
+}

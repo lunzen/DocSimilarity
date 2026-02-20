@@ -60,7 +60,7 @@ public class DocumentIngestionService(
 		return document;
 	}
 
-	public async Task<Document> IngestTextAsync(string fileName, string text, CancellationToken ct = default)
+	public async Task<Document> IngestTextAsync(string fileName, string text, string? documentType = null, CancellationToken ct = default)
 	{
 		var normalizedText = normalizer.Normalize(text);
 		var (textHash, fuzzyHash) = fingerprinter.GenerateAllFingerprints(normalizedText);
@@ -77,7 +77,8 @@ public class DocumentIngestionService(
 			NormalizedText = normalizedText,
 			TextHash = textHash,
 			FuzzyHash = fuzzyHash,
-			WordCount = tokens.Count
+			WordCount = tokens.Count,
+			DocumentType = documentType
 		};
 
 		await documentRepository.AddAsync(document, ct);

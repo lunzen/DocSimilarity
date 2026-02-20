@@ -28,6 +28,7 @@ public class DocumentConfiguration : IEntityTypeConfiguration<Document>
 		builder.Property(d => d.SourceFolder).HasColumnName("source_folder").HasMaxLength(500);
 		builder.Property(d => d.Tags).HasColumnName("tags").HasColumnType("jsonb");
 		builder.Property(d => d.CustomMetadata).HasColumnName("custom_metadata").HasColumnType("jsonb");
+		builder.Property(d => d.IsCanonicalReference).HasColumnName("is_canonical_reference").HasDefaultValue(false);
 		builder.Property(d => d.CreatedAt).HasColumnName("created_at");
 
 		builder.HasIndex(d => d.TextHash).HasDatabaseName("ix_documents_text_hash");
@@ -35,5 +36,9 @@ public class DocumentConfiguration : IEntityTypeConfiguration<Document>
 		builder.HasIndex(d => d.FileHash).HasDatabaseName("ix_documents_file_hash");
 		builder.HasIndex(d => d.DocumentType).HasDatabaseName("ix_documents_document_type");
 		builder.HasIndex(d => d.CreatedAt).HasDatabaseName("ix_documents_created_at");
+
+		builder.HasIndex(d => new { d.IsCanonicalReference, d.DocumentType })
+			.HasDatabaseName("ix_documents_canonical_type")
+			.HasFilter("is_canonical_reference = true");
 	}
 }

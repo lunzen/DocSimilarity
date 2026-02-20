@@ -14,6 +14,27 @@
 
 <LoadingSpinner Visible="@_loading" Message="@_loadingMessage" />
 
+@* Grouping mode selector *@
+<div class="card mb-3">
+	<div class="card-body py-2">
+		<div class="d-flex align-items-center gap-3">
+			<span class="fw-semibold small">Grouping Mode:</span>
+			<div class="btn-group btn-group-sm" role="group">
+				<input type="radio" class="btn-check" name="groupingMode" id="modeBatch" value="batch"
+					   checked="@(_groupingMode == "batch")" @onchange="@(() => _groupingMode = "batch")" />
+				<label class="btn btn-outline-primary" for="modeBatch">
+					<i class="bi bi-grid-3x3-gap"></i> Discover Groups (Batch)
+				</label>
+				<input type="radio" class="btn-check" name="groupingMode" id="modeCanonical" value="canonical"
+					   checked="@(_groupingMode == "canonical")" @onchange="@(() => _groupingMode = "canonical")" />
+				<label class="btn btn-outline-success" for="modeCanonical">
+					<i class="bi bi-bullseye"></i> Classify Against Canonicals
+				</label>
+			</div>
+		</div>
+	</div>
+</div>
+
 @* Status bar *@
 @if (_existingCount > 0)
 {
@@ -118,6 +139,7 @@ else
 	private int _existingCount;
 	private string? _statusMessage;
 	private string _statusCss = "alert-info";
+	private string _groupingMode = "batch";
 
 	protected override async Task OnInitializedAsync()
 	{
@@ -151,12 +173,22 @@ else
 	private async Task RerunGrouping()
 	{
 		_loading = true;
-		_loadingMessage = "Re-running grouping on existing documents...";
 		StateHasChanged();
 
 		try
 		{
-			await Orchestrator.GroupAllDocumentsAsync();
+			if (_groupingMode == "canonical")
+			{
+				_loadingMessage = "Classifying against canonical references...";
+				StateHasChanged();
+				await Orchestrator.ClassifyAgainstCanonicalsAsync(ct: default);
+			}
+			else
+			{
+				_loadingMessage = "Re-running batch grouping on existing documents...";
+				StateHasChanged();
+				await Orchestrator.GroupAllDocumentsAsync();
+			}
 			Nav.NavigateTo("/results");
 		}
 		catch (Exception ex)
@@ -227,10 +259,18 @@ else
 				StateHasChanged();
 			}
 
-			_loadingMessage = "Grouping documents...";
-			StateHasChanged();
-
-			await Orchestrator.GroupAllDocumentsAsync();
+			if (_groupingMode == "canonical")
+			{
+				_loadingMessage = "Classifying against canonical references...";
+				StateHasChanged();
+				await Orchestrator.ClassifyAgainstCanonicalsAsync(ct: default);
+			}
+			else
+			{
+				_loadingMessage = "Grouping documents...";
+				StateHasChanged();
+				await Orchestrator.GroupAllDocumentsAsync();
+			}
 
 			Nav.NavigateTo("/results");
 		}

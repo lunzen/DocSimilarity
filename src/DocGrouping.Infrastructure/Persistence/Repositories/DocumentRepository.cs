@@ -27,6 +27,12 @@ public class DocumentRepository(DocGroupingDbContext db) : IDocumentRepository
 	public async Task<List<Document>> GetAllAsync(CancellationToken ct = default)
 		=> await db.Documents.ToListAsync(ct);
 
+	public async Task<List<Document>> GetAllCanonicalsAsync(CancellationToken ct = default)
+		=> await db.Documents.Where(d => d.IsCanonicalReference).ToListAsync(ct);
+
+	public async Task<List<Document>> GetCanonicalsByDocumentTypeAsync(string documentType, CancellationToken ct = default)
+		=> await db.Documents.Where(d => d.IsCanonicalReference && d.DocumentType == documentType).ToListAsync(ct);
+
 	public async Task<List<Document>> GetUngroupedAsync(CancellationToken ct = default)
 		=> await db.Documents.Where(d => d.GroupMembership == null).ToListAsync(ct);
 
@@ -48,6 +54,12 @@ public class DocumentRepository(DocGroupingDbContext db) : IDocumentRepository
 	public async Task UpdateAsync(Document document, CancellationToken ct = default)
 	{
 		db.Documents.Update(document);
+		await db.SaveChangesAsync(ct);
+	}
+
+	public async Task UpdateRangeAsync(IEnumerable<Document> documents, CancellationToken ct = default)
+	{
+		db.Documents.UpdateRange(documents);
 		await db.SaveChangesAsync(ct);
 	}
 
