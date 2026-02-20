@@ -24,9 +24,10 @@ bld/
 logs/
 *.log
 
-## IDE
+## IDE / Tools
 .vs/
 .vscode/
+.claude/settings.local.json
 *.swp
 *~
 
