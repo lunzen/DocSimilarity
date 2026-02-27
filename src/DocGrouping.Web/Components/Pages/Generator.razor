@@ -24,8 +24,22 @@
 					<input class="form-check-input" type="checkbox" @bind="_bulkMarkCanonical" id="chkBulkCanonical" />
 					<label class="form-check-label" for="chkBulkCanonical">Mark as canonical</label>
 				</div>
+				<div class="d-flex align-items-center gap-1 me-2 border rounded px-2 py-1">
+					<div class="form-check form-check-inline mb-0">
+						<input class="form-check-input" type="radio" name="groupingMode" id="modeIncremental"
+							   value="incremental" @onchange="@(() => _groupingMode = "incremental")"
+							   checked="@(_groupingMode == "incremental")" />
+						<label class="form-check-label small" for="modeIncremental">Incremental</label>
+					</div>
+					<div class="form-check form-check-inline mb-0">
+						<input class="form-check-input" type="radio" name="groupingMode" id="modeFull"
+							   value="full" @onchange="@(() => _groupingMode = "full")"
+							   checked="@(_groupingMode == "full")" />
+						<label class="form-check-label small" for="modeFull">Full Regroup</label>
+					</div>
+				</div>
 				<label class="form-label mb-0 fw-semibold">Count:</label>
-				<input type="number" class="form-control form-control-sm" style="width: 100px;" min="10" max="5000" @bind="_bulkCount" />
+				<input type="number" class="form-control form-control-sm" style="width: 100px;" min="10" max="500000" @bind="_bulkCount" />
 				<button class="btn btn-primary" @onclick="BulkGenerateAndProcess" disabled="@_loading">
 					<i class="bi bi-play-fill"></i> Generate @_bulkCount Docs
 				</button>
@@ -109,6 +123,28 @@
 										<td>@_lastMetrics.Phase4Singletons singleton groups</td>
 										<td>No matches found</td>
 									</tr>
+									@if (_lastMetrics.ExistingGroupsCount > 0)
+									{
+										<tr class="table-info">
+											<td colspan="4" class="fw-semibold">Incremental Summary</td>
+										</tr>
+										<tr>
+											<td>Existing Groups</td>
+											<td colspan="3">@_lastMetrics.ExistingGroupsCount groups preserved</td>
+										</tr>
+										<tr>
+											<td>New Documents</td>
+											<td colspan="3">@_lastMetrics.NewDocumentsCount processed</td>
+										</tr>
+										<tr>
+											<td>Joined Existing</td>
+											<td colspan="3">@_lastMetrics.JoinedExistingGroups docs added to existing groups</td>
+										</tr>
+										<tr>
+											<td>New Groups Formed</td>
+											<td colspan="3">@_lastMetrics.NewGroupsFormed new groups (incl. singletons)</td>
+										</tr>
+									}
 									<tr class="table-dark fw-bold">
 										<td>Total</td>
 										<td>@($"{_totalSeconds:F1}s")</td>
@@ -234,6 +270,7 @@
 	private int _bulkCount = 1000;
 	private bool _bulkMarkCanonical;
 	private bool _singleMarkCanonical;
+	private string _groupingMode = "incremental";
 	private string? _bulkProgress;
 	private int _bulkProgressPct;
 	private string _elapsed = "00:00";
@@ -371,12 +408,15 @@
 				InvokeAsync(StateHasChanged);
 			});
 
-			await Orchestrator.GroupAllDocumentsAsync(progress);
+			if (_groupingMode == "incremental")
+				await Orchestrator.GroupIncrementalAsync(progress);
+			else
+				await Orchestrator.GroupAllDocumentsAsync(progress);
 
 			var groupTime = (_stopwatch.Elapsed - groupStart).TotalSeconds;
 			_stopwatch.Stop();
 			_totalSeconds = _stopwatch.Elapsed.TotalSeconds;
-			Log($"Grouping complete in {groupTime:F1}s", "text-success");
+			Log($"Grouping ({_groupingMode}) complete in {groupTime:F1}s", "text-success");
 			Log($"Total elapsed: {_totalSeconds:F1}s", "text-warning");
 
 			_bulkProgressPct = 100;
@@ -464,10 +504,13 @@
 				InvokeAsync(StateHasChanged);
 			});
 
-			await Orchestrator.GroupAllDocumentsAsync(progress);
+			if (_groupingMode == "incremental")
+				await Orchestrator.GroupIncrementalAsync(progress);
+			else
+				await Orchestrator.GroupAllDocumentsAsync(progress);
 
 			_stopwatch.Stop();
-			Log($"Complete in {_stopwatch.Elapsed.TotalSeconds:F1}s", "text-success");
+			Log($"Grouping ({_groupingMode}) complete in {_stopwatch.Elapsed.TotalSeconds:F1}s", "text-success");
 			_bulkProgressPct = 100;
 			StateHasChanged();
 			await Task.Delay(500);

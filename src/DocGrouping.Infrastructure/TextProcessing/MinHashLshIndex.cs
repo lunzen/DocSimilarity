@@ -46,6 +46,26 @@ public class MinHashLshIndex
 	}
 
 	/// <summary>
+	/// Queries a single document's signature against the index, returning indices of
+	/// all documents that share at least one LSH bucket with the query signature.
+	/// Does NOT insert the query into the index.
+	/// </summary>
+	public HashSet<int> QueryCandidates(int[] signature)
+	{
+		var candidates = new HashSet<int>();
+		for (var band = 0; band < _bands; band++)
+		{
+			var bucketHash = HashBand(signature, band * _rowsPerBand, _rowsPerBand);
+			if (_buckets[band].TryGetValue(bucketHash, out var bucket) && bucket.Count <= MaxBucketSize)
+			{
+				foreach (var idx in bucket)
+					candidates.Add(idx);
+			}
+		}
+		return candidates;
+	}
+
+	/// <summary>
 	/// Returns all candidate pairs that share at least one LSH bucket.
 	/// Skips degenerate buckets with more than 100 entries.
 	/// </summary>

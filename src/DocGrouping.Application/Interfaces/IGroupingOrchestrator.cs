@@ -9,6 +9,7 @@ public interface IGroupingOrchestrator
 	Task<List<DocumentGroup>> GroupAllDocumentsAsync(CancellationToken ct = default);
 	Task<List<DocumentGroup>> GroupAllDocumentsAsync(IProgress<GroupingProgress> progress, CancellationToken ct = default);
 	Task<DocumentGroup> GroupSingleDocumentAsync(Document document, CancellationToken ct = default);
+	Task<List<DocumentGroup>> GroupIncrementalAsync(IProgress<GroupingProgress>? progress = null, CancellationToken ct = default);
 	Task<List<CanonicalMatchResult>> ClassifyAgainstCanonicalsAsync(List<Guid>? targetDocumentIds = null, IProgress<GroupingProgress>? progress = null, CancellationToken ct = default);
 	Task<StatisticsDto> GetStatisticsAsync(CancellationToken ct = default);
 }
@@ -42,4 +43,10 @@ public class GroupingMetrics
 	public int Phase4Singletons { get; set; }
 	public double TotalSeconds { get; set; }
 	public int TotalGroups { get; set; }
+
+	// Incremental-specific metrics
+	public int ExistingGroupsCount { get; set; }
+	public int NewDocumentsCount { get; set; }
+	public int JoinedExistingGroups { get; set; }
+	public int NewGroupsFormed { get; set; }
 }

@@ -6,8 +6,10 @@ using DocGrouping.Application.Interfaces;
 using DocGrouping.Domain.Entities;
 using DocGrouping.Domain.Enums;
 using DocGrouping.Domain.Interfaces;
+using DocGrouping.Infrastructure.Persistence;
 using DocGrouping.Infrastructure.Rules;
 using DocGrouping.Infrastructure.TextProcessing;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 
 namespace DocGrouping.Infrastructure.Services;
@@ -15,6 +17,7 @@ namespace DocGrouping.Infrastructure.Services;
 public class GroupingOrchestrator(
 	IDocumentRepository documentRepository,
 	IDocumentGroupRepository groupRepository,
+	DocGroupingDbContext dbContext,
 	DocumentFingerprinter fingerprinter,
 	RulesEngine rulesEngine,
 	ILogger<GroupingOrchestrator> logger) : IGroupingOrchestrator
@@ -315,6 +318,16 @@ public class GroupingOrchestrator(
 			phase3Count, candidatePairCount, verifiedPairs.Count, pairsCompared, metrics.Phase3Seconds, pairRate);
 		progress?.Report(new GroupingProgress("Phase 3",
 			$"Done: {phase3Count} groups | {candidatePairCount:N0} candidates → {verifiedPairs.Count:N0} verified in {metrics.Phase3Seconds:F1}s", 78));
+
+		// Persist MinHash signatures for all documents (seeds incremental runs)
+		progress?.Report(new GroupingProgress("Phase 3", "Persisting MinHash signatures for incremental use...", 79));
+		var allSignatures = new int[documents.Count][];
+		Parallel.For(0, documents.Count, i =>
+		{
+			allSignatures[i] = fingerprinter.GenerateMinHashSignature(documents[i].NormalizedText);
+		});
+		await PersistMinHashSignaturesAsync(documents, allSignatures, clearExisting: true, ct);
+		logger.LogInformation("Persisted {Count} MinHash signatures", documents.Count);
 
 		// ── Phase 4: Singleton groups for unmatched documents ──
 		phaseSw.Restart();
@@ -636,6 +649,438 @@ public class GroupingOrchestrator(
 			},
 			DeduplicationRatio = totalDocs > 0 ? 1.0 - ((double)groups.Count / totalDocs) : 0
 		};
+	}
+
+	public async Task<List<DocumentGroup>> GroupIncrementalAsync(
+		IProgress<GroupingProgress>? progress = null,
+		CancellationToken ct = default)
+	{
+		var totalSw = Stopwatch.StartNew();
+		var phaseSw = new Stopwatch();
+		var metrics = new GroupingMetrics();
+
+		logger.LogInformation("Starting incremental grouping of ungrouped documents");
+		progress?.Report(new GroupingProgress("Init", "Loading ungrouped documents...", 2));
+
+		// Load ungrouped docs
+		var newDocs = await documentRepository.GetUngroupedAsync(ct);
+		if (newDocs.Count == 0)
+		{
+			logger.LogInformation("No ungrouped documents found — nothing to do");
+			progress?.Report(new GroupingProgress("Done", "No ungrouped documents to process.", 100));
+			return [];
+		}
+
+		metrics.NewDocumentsCount = newDocs.Count;
+
+		// Check if any groups exist at all — if not, delegate to full regroup (first run)
+		var existingGroups = await groupRepository.GetAllAsync(ct);
+		metrics.ExistingGroupsCount = existingGroups.Count;
+
+		if (existingGroups.Count == 0)
+		{
+			logger.LogInformation("No existing groups found — delegating to full regroup (first run)");
+			progress?.Report(new GroupingProgress("Init", "No existing groups — running full regroup for initial indexing...", 5));
+			return await GroupAllDocumentsAsync(progress, ct);
+		}
+
+		logger.LogInformation("Incremental grouping: {NewDocs} new docs against {ExistingGroups} existing groups",
+			newDocs.Count, existingGroups.Count);
+		progress?.Report(new GroupingProgress("Init",
+			$"Found {newDocs.Count} ungrouped docs, {existingGroups.Count} existing groups", 5));
+
+		var grouped = new HashSet<Guid>();
+		var newGroups = new List<DocumentGroup>();
+		var nextGroupNumber = await groupRepository.GetNextGroupNumberAsync(ct);
+		int joinedExisting = 0;
+
+		// ── Phase 1: Exact Hash (join existing groups or form new) ──
+		phaseSw.Restart();
+		progress?.Report(new GroupingProgress("Phase 1", "Matching exact text hashes...", 8));
+
+		var newDocTextHashes = newDocs.Select(d => d.TextHash).Distinct().ToList();
+		var existingByTextHash = await documentRepository.GetByTextHashesAsync(newDocTextHashes, ct);
+		// Build lookup: textHash → existing doc (that IS in a group)
+		var existingHashLookup = existingByTextHash
+			.Where(d => d.GroupMembership != null)
+			.GroupBy(d => d.TextHash)
+			.ToDictionary(g => g.Key, g => g.First());
+
+		// Group new docs by their text hash for batch processing
+		var newByTextHash = newDocs.GroupBy(d => d.TextHash).ToDictionary(g => g.Key, g => g.ToList());
+
+		foreach (var (textHash, docsWithHash) in newByTextHash)
+		{
+			if (existingHashLookup.TryGetValue(textHash, out var existingDoc))
+			{
+				// Join the existing doc's group
+				var existingGroup = await groupRepository.GetByIdAsync(existingDoc.GroupMembership!.GroupId, ct);
+				if (existingGroup != null)
+				{
+					foreach (var newDoc in docsWithHash.Where(d => !grouped.Contains(d.Id)))
+					{
+						AddToGroup(existingGroup, newDoc, 1.0m);
+						grouped.Add(newDoc.Id);
+						joinedExisting++;
+					}
+					await groupRepository.UpdateAsync(existingGroup, ct);
+				}
+			}
+			else if (docsWithHash.Count > 1)
+			{
+				// Multiple new docs share a hash with no existing match → new group
+				var ungroupedOfHash = docsWithHash.Where(d => !grouped.Contains(d.Id)).ToList();
+				if (ungroupedOfHash.Count > 1)
+				{
+					var group = CreateGroup(nextGroupNumber++, ungroupedOfHash,
+						MatchConfidence.VeryHigh, "Exact text match (normalized, incremental)",
+						ungroupedOfHash[0], 1.0m);
+					newGroups.Add(group);
+					await groupRepository.AddAsync(group, ct);
+					grouped.UnionWith(ungroupedOfHash.Select(d => d.Id));
+				}
+			}
+		}
+
+		metrics.Phase1Seconds = phaseSw.Elapsed.TotalSeconds;
+		metrics.Phase1Groups = newGroups.Count;
+		logger.LogInformation("Phase 1 (exact hash): {Joined} joined existing, {New} new groups in {Time:F2}s",
+			joinedExisting, newGroups.Count, metrics.Phase1Seconds);
+		progress?.Report(new GroupingProgress("Phase 1",
+			$"Done: {joinedExisting} joined existing groups, {newGroups.Count} new groups in {metrics.Phase1Seconds:F1}s", 25));
+
+		// ── Phase 2: Fuzzy Hash ──
+		phaseSw.Restart();
+		var remainingNewDocs = newDocs.Where(d => !grouped.Contains(d.Id)).ToList();
+		if (remainingNewDocs.Count == 0) goto PhaseComplete;
+
+		progress?.Report(new GroupingProgress("Phase 2",
+			$"Matching fuzzy hashes for {remainingNewDocs.Count} remaining docs...", 30));
+
+		var newDocFuzzyHashes = remainingNewDocs.Select(d => d.FuzzyHash).Distinct().ToList();
+		var existingByFuzzyHash = await documentRepository.GetByFuzzyHashesAsync(newDocFuzzyHashes, ct);
+		var existingFuzzyLookup = existingByFuzzyHash
+			.Where(d => d.GroupMembership != null)
+			.GroupBy(d => d.FuzzyHash)
+			.ToDictionary(g => g.Key, g => g.First());
+
+		var newByFuzzyHash = remainingNewDocs.GroupBy(d => d.FuzzyHash).ToDictionary(g => g.Key, g => g.ToList());
+		var phase2NewGroups = 0;
+		var phase2Joined = 0;
+
+		foreach (var (fuzzyHash, docsWithHash) in newByFuzzyHash)
+		{
+			if (existingFuzzyLookup.TryGetValue(fuzzyHash, out var existingDoc))
+			{
+				var existingGroup = await groupRepository.GetByIdAsync(existingDoc.GroupMembership!.GroupId, ct);
+				if (existingGroup != null)
+				{
+					foreach (var newDoc in docsWithHash.Where(d => !grouped.Contains(d.Id)))
+					{
+						AddToGroup(existingGroup, newDoc, 0.9m);
+						grouped.Add(newDoc.Id);
+						phase2Joined++;
+						joinedExisting++;
+					}
+					await groupRepository.UpdateAsync(existingGroup, ct);
+				}
+			}
+			else if (docsWithHash.Count > 1)
+			{
+				var ungroupedOfHash = docsWithHash.Where(d => !grouped.Contains(d.Id)).ToList();
+				if (ungroupedOfHash.Count > 1)
+				{
+					var group = CreateGroup(nextGroupNumber++, ungroupedOfHash,
+						MatchConfidence.High, "Fuzzy content match (top-K tokens, incremental)",
+						ungroupedOfHash[0], 0.9m);
+					newGroups.Add(group);
+					await groupRepository.AddAsync(group, ct);
+					grouped.UnionWith(ungroupedOfHash.Select(d => d.Id));
+					phase2NewGroups++;
+				}
+			}
+		}
+
+		metrics.Phase2Seconds = phaseSw.Elapsed.TotalSeconds;
+		metrics.Phase2Groups = phase2NewGroups;
+		logger.LogInformation("Phase 2 (fuzzy hash): {Joined} joined existing, {New} new groups in {Time:F2}s",
+			phase2Joined, phase2NewGroups, metrics.Phase2Seconds);
+		progress?.Report(new GroupingProgress("Phase 2",
+			$"Done: {phase2Joined} joined, {phase2NewGroups} new groups in {metrics.Phase2Seconds:F1}s", 45));
+
+		// ── Phase 3: LSH + MinHash ──
+		phaseSw.Restart();
+		remainingNewDocs = newDocs.Where(d => !grouped.Contains(d.Id)).ToList();
+		metrics.Phase3UngroupedCount = remainingNewDocs.Count;
+
+		if (remainingNewDocs.Count == 0) goto PhaseComplete;
+
+		progress?.Report(new GroupingProgress("Phase 3",
+			$"Loading persisted MinHash signatures for LSH comparison ({remainingNewDocs.Count} remaining docs)...", 48));
+
+		// Load existing MinHash signatures from DB
+		var existingSignatures = await dbContext.MinHashSignatures
+			.Include(s => s.Document)
+			.ThenInclude(d => d.GroupMembership)
+			.Where(s => s.Document.GroupMembership != null) // only docs that are in groups
+			.ToListAsync(ct);
+
+		logger.LogInformation("Phase 3: Loaded {Count} existing MinHash signatures", existingSignatures.Count);
+
+		// Compute signatures for new remaining docs
+		progress?.Report(new GroupingProgress("Phase 3",
+			$"Computing MinHash signatures for {remainingNewDocs.Count} new docs...", 50));
+
+		var newSignatures = new int[remainingNewDocs.Count][];
+		Parallel.For(0, remainingNewDocs.Count, i =>
+		{
+			newSignatures[i] = fingerprinter.GenerateMinHashSignature(remainingNewDocs[i].NormalizedText);
+		});
+
+		// Build LSH index from existing signatures only (new docs query against it)
+		progress?.Report(new GroupingProgress("Phase 3", "Building LSH index from existing signatures...", 55));
+		var lshIndex = new MinHashLshIndex(bands: 20, rowsPerBand: 5);
+		for (var i = 0; i < existingSignatures.Count; i++)
+			lshIndex.Add(i, existingSignatures[i].Signature);
+
+		// For each new doc, query candidates among existing docs
+		var phase3Joined = 0;
+		var phase3NewGroups = 0;
+		long candidateCount = 0;
+		long verifiedCount = 0;
+
+		progress?.Report(new GroupingProgress("Phase 3",
+			$"Querying {remainingNewDocs.Count} new docs against {existingSignatures.Count} existing signatures...", 60));
+
+		// Track new docs that didn't match existing — for new-to-new comparison
+		var unmatchedNewIndices = new List<int>();
+
+		for (var i = 0; i < remainingNewDocs.Count; i++)
+		{
+			var newDoc = remainingNewDocs[i];
+			if (grouped.Contains(newDoc.Id)) continue;
+
+			var candidates = lshIndex.QueryCandidates(newSignatures[i]);
+			Interlocked.Add(ref candidateCount, candidates.Count);
+
+			Document? bestMatch = null;
+			decimal bestSimilarity = 0m;
+
+			foreach (var existIdx in candidates)
+			{
+				Interlocked.Increment(ref verifiedCount);
+				var existDoc = existingSignatures[existIdx].Document;
+				var sim = fingerprinter.CalculateSimilarityMetrics(
+					newDoc.NormalizedText, existDoc.NormalizedText);
+
+				if (sim.JaccardSimilarity >= 0.70 && (decimal)sim.JaccardSimilarity > bestSimilarity)
+				{
+					bestSimilarity = (decimal)sim.JaccardSimilarity;
+					bestMatch = existDoc;
+				}
+			}
+
+			if (bestMatch?.GroupMembership != null)
+			{
+				var existingGroup = await groupRepository.GetByIdAsync(bestMatch.GroupMembership.GroupId, ct);
+				if (existingGroup != null)
+				{
+					var confidence = bestSimilarity >= 0.85m ? MatchConfidence.High : MatchConfidence.Medium;
+					AddToGroup(existingGroup, newDoc, bestSimilarity);
+					if (existingGroup.Confidence < confidence)
+					{
+						existingGroup.Confidence = confidence;
+						existingGroup.MatchReason = $"Content similarity ({bestSimilarity:P1} Jaccard, incremental)";
+					}
+					await groupRepository.UpdateAsync(existingGroup, ct);
+					grouped.Add(newDoc.Id);
+					phase3Joined++;
+					joinedExisting++;
+				}
+			}
+			else
+			{
+				unmatchedNewIndices.Add(i);
+			}
+
+			if ((i + 1) % 100 == 0)
+			{
+				var pct = 60 + (int)(15.0 * (i + 1) / remainingNewDocs.Count);
+				progress?.Report(new GroupingProgress("Phase 3",
+					$"Processed {i + 1}/{remainingNewDocs.Count} docs ({phase3Joined} joined existing)...", pct));
+			}
+		}
+
+		// New-to-new comparison via LSH among unmatched new docs
+		if (unmatchedNewIndices.Count >= 2)
+		{
+			progress?.Report(new GroupingProgress("Phase 3",
+				$"Comparing {unmatchedNewIndices.Count} unmatched new docs against each other...", 76));
+
+			var newOnlyIndex = new MinHashLshIndex(bands: 20, rowsPerBand: 5);
+			for (var i = 0; i < unmatchedNewIndices.Count; i++)
+				newOnlyIndex.Add(i, newSignatures[unmatchedNewIndices[i]]);
+
+			var newPairs = newOnlyIndex.GetCandidatePairs();
+			var simGroups = new Dictionary<int, List<int>>();
+			var docToSimGroup = new Dictionary<int, int>();
+			var tempGroupId = 0;
+
+			foreach (var (a, b) in newPairs)
+			{
+				var idxA = unmatchedNewIndices[a];
+				var idxB = unmatchedNewIndices[b];
+				var sim = fingerprinter.CalculateSimilarityMetrics(
+					remainingNewDocs[idxA].NormalizedText,
+					remainingNewDocs[idxB].NormalizedText);
+
+				if (sim.JaccardSimilarity < 0.70) continue;
+
+				// Union-find merge
+				if (docToSimGroup.TryGetValue(a, out var gidA) && docToSimGroup.TryGetValue(b, out var gidB))
+				{
+					if (gidA != gidB)
+					{
+						simGroups[gidA].AddRange(simGroups[gidB]);
+						foreach (var idx in simGroups[gidB])
+							docToSimGroup[idx] = gidA;
+						simGroups.Remove(gidB);
+					}
+				}
+				else if (docToSimGroup.TryGetValue(a, out var existing))
+				{
+					simGroups[existing].Add(b);
+					docToSimGroup[b] = existing;
+				}
+				else if (docToSimGroup.TryGetValue(b, out existing))
+				{
+					simGroups[existing].Add(a);
+					docToSimGroup[a] = existing;
+				}
+				else
+				{
+					simGroups[tempGroupId] = [a, b];
+					docToSimGroup[a] = tempGroupId;
+					docToSimGroup[b] = tempGroupId;
+					tempGroupId++;
+				}
+			}
+
+			foreach (var (_, memberIndices) in simGroups)
+			{
+				var docsInGroup = memberIndices
+					.Select(i => remainingNewDocs[unmatchedNewIndices[i]])
+					.Where(d => !grouped.Contains(d.Id))
+					.ToList();
+
+				if (docsInGroup.Count <= 1) continue;
+
+				var group = CreateGroup(nextGroupNumber++, docsInGroup,
+					MatchConfidence.Medium, "Moderate content similarity (70%+ Jaccard, incremental new-to-new)",
+					docsInGroup[0], 0.75m);
+				newGroups.Add(group);
+				await groupRepository.AddAsync(group, ct);
+				grouped.UnionWith(docsInGroup.Select(d => d.Id));
+				phase3NewGroups++;
+			}
+		}
+
+		// Persist new MinHash signatures
+		await PersistMinHashSignaturesAsync(remainingNewDocs, newSignatures, clearExisting: false, ct);
+
+		metrics.Phase3Seconds = phaseSw.Elapsed.TotalSeconds;
+		metrics.Phase3Groups = phase3NewGroups;
+		metrics.Phase3CandidatePairs = candidateCount;
+		metrics.Phase3VerifiedPairs = verifiedCount;
+		metrics.Phase3PairsCompared = verifiedCount;
+		logger.LogInformation("Phase 3 (LSH): {Joined} joined existing, {New} new groups, {Candidates:N0} candidates, {Verified:N0} verified in {Time:F2}s",
+			phase3Joined, phase3NewGroups, candidateCount, verifiedCount, metrics.Phase3Seconds);
+		progress?.Report(new GroupingProgress("Phase 3",
+			$"Done: {phase3Joined} joined, {phase3NewGroups} new groups in {metrics.Phase3Seconds:F1}s", 78));
+
+	PhaseComplete:
+
+		// ── Phase 4: Singletons for remaining new docs ──
+		phaseSw.Restart();
+		var singletonDocs = newDocs.Where(d => !grouped.Contains(d.Id)).ToList();
+		progress?.Report(new GroupingProgress("Phase 4",
+			$"Creating singleton groups for {singletonDocs.Count} unmatched docs...", 80));
+
+		var singletonCount = 0;
+		foreach (var doc in singletonDocs)
+		{
+			var group = CreateGroup(nextGroupNumber++, [doc],
+				MatchConfidence.None, "No matches found (unique document, incremental)",
+				doc, 0m);
+			newGroups.Add(group);
+			await groupRepository.AddAsync(group, ct);
+			singletonCount++;
+
+			if (singletonCount % 100 == 0)
+			{
+				var pct = 80 + (int)(18.0 * singletonCount / singletonDocs.Count);
+				progress?.Report(new GroupingProgress("Phase 4",
+					$"Creating singletons... {singletonCount}/{singletonDocs.Count}", pct));
+			}
+		}
+
+		metrics.Phase4Seconds = phaseSw.Elapsed.TotalSeconds;
+		metrics.Phase4Singletons = singletonCount;
+		metrics.TotalSeconds = totalSw.Elapsed.TotalSeconds;
+		metrics.TotalGroups = existingGroups.Count + newGroups.Count;
+		metrics.TotalDocuments = newDocs.Count;
+		metrics.JoinedExistingGroups = joinedExisting;
+		metrics.NewGroupsFormed = newGroups.Count;
+
+		logger.LogInformation(
+			"Incremental grouping complete: {NewDocs} new docs → {Joined} joined existing, {NewGroups} new groups, {Singletons} singletons in {Time:F2}s",
+			newDocs.Count, joinedExisting, newGroups.Count - singletonCount, singletonCount, metrics.TotalSeconds);
+
+		progress?.Report(new GroupingProgress("Done",
+			$"Complete: {newDocs.Count} new docs processed — {joinedExisting} joined existing, {newGroups.Count - singletonCount} new groups, {singletonCount} singletons in {metrics.TotalSeconds:F1}s",
+			100, metrics));
+
+		return newGroups;
+	}
+
+	private async Task PersistMinHashSignaturesAsync(
+		List<Document> docs, int[][] signatures, bool clearExisting, CancellationToken ct)
+	{
+		if (clearExisting)
+		{
+			await dbContext.MinHashSignatures.ExecuteDeleteAsync(ct);
+		}
+
+		var batch = new List<MinHashSignature>();
+		for (var i = 0; i < docs.Count; i++)
+		{
+			// Skip if signature already exists for this doc
+			if (!clearExisting)
+			{
+				var exists = await dbContext.MinHashSignatures
+					.AnyAsync(s => s.DocumentId == docs[i].Id, ct);
+				if (exists) continue;
+			}
+
+			batch.Add(new MinHashSignature
+			{
+				DocumentId = docs[i].Id,
+				Signature = signatures[i]
+			});
+
+			if (batch.Count >= 500)
+			{
+				dbContext.MinHashSignatures.AddRange(batch);
+				await dbContext.SaveChangesAsync(ct);
+				batch.Clear();
+			}
+		}
+
+		if (batch.Count > 0)
+		{
+			dbContext.MinHashSignatures.AddRange(batch);
+			await dbContext.SaveChangesAsync(ct);
+		}
 	}
 
 	private DocumentGroup CreateGroup(
