@@ -73,7 +73,19 @@ public class DocumentGroupRepository(DocGroupingDbContext db) : IDocumentGroupRe
 	public async Task UpdateAsync(DocumentGroup group, CancellationToken ct = default)
 	{
 		group.UpdatedAt = DateTimeOffset.UtcNow;
-		db.DocumentGroups.Update(group);
+
+		// Fix phantom-Modified memberships caused by EF Core navigation fix-up.
+		// When the same group is loaded multiple times and memberships are added,
+		// existing memberships can be marked Modified even though no values changed.
+		foreach (var entry in db.ChangeTracker.Entries<DocumentGroupMembership>()
+			.Where(e => e.State == EntityState.Modified))
+		{
+			var hasRealChange = entry.Properties.Any(p => p.IsModified &&
+				!Equals(p.OriginalValue, p.CurrentValue));
+			if (!hasRealChange)
+				entry.State = EntityState.Unchanged;
+		}
+
 		await db.SaveChangesAsync(ct);
 	}
 

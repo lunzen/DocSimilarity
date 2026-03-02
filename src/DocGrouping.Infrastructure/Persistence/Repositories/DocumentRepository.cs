@@ -19,10 +19,10 @@ public class DocumentRepository(DocGroupingDbContext db) : IDocumentRepository
 		=> await db.Documents.FirstOrDefaultAsync(d => d.FileHash == fileHash, ct);
 
 	public async Task<List<Document>> GetByTextHashesAsync(IEnumerable<string> textHashes, CancellationToken ct = default)
-		=> await db.Documents.Where(d => textHashes.Contains(d.TextHash)).ToListAsync(ct);
+		=> await db.Documents.AsNoTracking().Include(d => d.GroupMembership).Where(d => textHashes.Contains(d.TextHash)).ToListAsync(ct);
 
 	public async Task<List<Document>> GetByFuzzyHashesAsync(IEnumerable<string> fuzzyHashes, CancellationToken ct = default)
-		=> await db.Documents.Where(d => fuzzyHashes.Contains(d.FuzzyHash)).ToListAsync(ct);
+		=> await db.Documents.AsNoTracking().Include(d => d.GroupMembership).Where(d => fuzzyHashes.Contains(d.FuzzyHash)).ToListAsync(ct);
 
 	public async Task<List<Document>> GetAllAsync(CancellationToken ct = default)
 		=> await db.Documents.ToListAsync(ct);
@@ -34,7 +34,7 @@ public class DocumentRepository(DocGroupingDbContext db) : IDocumentRepository
 		=> await db.Documents.Where(d => d.IsCanonicalReference && d.DocumentType == documentType).ToListAsync(ct);
 
 	public async Task<List<Document>> GetUngroupedAsync(CancellationToken ct = default)
-		=> await db.Documents.Where(d => d.GroupMembership == null).ToListAsync(ct);
+		=> await db.Documents.AsNoTracking().Where(d => d.GroupMembership == null).ToListAsync(ct);
 
 	public async Task<int> GetCountAsync(CancellationToken ct = default)
 		=> await db.Documents.CountAsync(ct);

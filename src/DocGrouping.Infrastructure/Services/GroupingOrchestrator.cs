@@ -655,6 +655,9 @@ public class GroupingOrchestrator(
 		IProgress<GroupingProgress>? progress = null,
 		CancellationToken ct = default)
 	{
+		// Start with a clean change tracker to avoid stale entity conflicts
+		dbContext.ChangeTracker.Clear();
+
 		var totalSw = Stopwatch.StartNew();
 		var phaseSw = new Stopwatch();
 		var metrics = new GroupingMetrics();
@@ -674,10 +677,10 @@ public class GroupingOrchestrator(
 		metrics.NewDocumentsCount = newDocs.Count;
 
 		// Check if any groups exist at all — if not, delegate to full regroup (first run)
-		var existingGroups = await groupRepository.GetAllAsync(ct);
-		metrics.ExistingGroupsCount = existingGroups.Count;
+		var existingGroupCount = await groupRepository.GetCountAsync(ct: ct);
+		metrics.ExistingGroupsCount = existingGroupCount;
 
-		if (existingGroups.Count == 0)
+		if (existingGroupCount == 0)
 		{
 			logger.LogInformation("No existing groups found — delegating to full regroup (first run)");
 			progress?.Report(new GroupingProgress("Init", "No existing groups — running full regroup for initial indexing...", 5));
@@ -685,9 +688,9 @@ public class GroupingOrchestrator(
 		}
 
 		logger.LogInformation("Incremental grouping: {NewDocs} new docs against {ExistingGroups} existing groups",
-			newDocs.Count, existingGroups.Count);
+			newDocs.Count, existingGroupCount);
 		progress?.Report(new GroupingProgress("Init",
-			$"Found {newDocs.Count} ungrouped docs, {existingGroups.Count} existing groups", 5));
+			$"Found {newDocs.Count} ungrouped docs, {existingGroupCount} existing groups", 5));
 
 		var grouped = new HashSet<Guid>();
 		var newGroups = new List<DocumentGroup>();
@@ -711,34 +714,19 @@ public class GroupingOrchestrator(
 
 		foreach (var (textHash, docsWithHash) in newByTextHash)
 		{
-			if (existingHashLookup.TryGetValue(textHash, out var existingDoc))
+			if (!existingHashLookup.TryGetValue(textHash, out var existingDoc)) continue;
+
+			// Join the existing doc's group
+			var existingGroup = await groupRepository.GetByIdAsync(existingDoc.GroupMembership!.GroupId, ct);
+			if (existingGroup != null)
 			{
-				// Join the existing doc's group
-				var existingGroup = await groupRepository.GetByIdAsync(existingDoc.GroupMembership!.GroupId, ct);
-				if (existingGroup != null)
+				foreach (var newDoc in docsWithHash.Where(d => !grouped.Contains(d.Id)))
 				{
-					foreach (var newDoc in docsWithHash.Where(d => !grouped.Contains(d.Id)))
-					{
-						AddToGroup(existingGroup, newDoc, 1.0m);
-						grouped.Add(newDoc.Id);
-						joinedExisting++;
-					}
-					await groupRepository.UpdateAsync(existingGroup, ct);
+					AddToGroup(existingGroup, newDoc, 1.0m);
+					grouped.Add(newDoc.Id);
+					joinedExisting++;
 				}
-			}
-			else if (docsWithHash.Count > 1)
-			{
-				// Multiple new docs share a hash with no existing match → new group
-				var ungroupedOfHash = docsWithHash.Where(d => !grouped.Contains(d.Id)).ToList();
-				if (ungroupedOfHash.Count > 1)
-				{
-					var group = CreateGroup(nextGroupNumber++, ungroupedOfHash,
-						MatchConfidence.VeryHigh, "Exact text match (normalized, incremental)",
-						ungroupedOfHash[0], 1.0m);
-					newGroups.Add(group);
-					await groupRepository.AddAsync(group, ct);
-					grouped.UnionWith(ungroupedOfHash.Select(d => d.Id));
-				}
+				await groupRepository.UpdateAsync(existingGroup, ct);
 			}
 		}
 
@@ -770,34 +758,19 @@ public class GroupingOrchestrator(
 
 		foreach (var (fuzzyHash, docsWithHash) in newByFuzzyHash)
 		{
-			if (existingFuzzyLookup.TryGetValue(fuzzyHash, out var existingDoc))
+			if (!existingFuzzyLookup.TryGetValue(fuzzyHash, out var existingDoc)) continue;
+
+			var existingGroup = await groupRepository.GetByIdAsync(existingDoc.GroupMembership!.GroupId, ct);
+			if (existingGroup != null)
 			{
-				var existingGroup = await groupRepository.GetByIdAsync(existingDoc.GroupMembership!.GroupId, ct);
-				if (existingGroup != null)
+				foreach (var newDoc in docsWithHash.Where(d => !grouped.Contains(d.Id)))
 				{
-					foreach (var newDoc in docsWithHash.Where(d => !grouped.Contains(d.Id)))
-					{
-						AddToGroup(existingGroup, newDoc, 0.9m);
-						grouped.Add(newDoc.Id);
-						phase2Joined++;
-						joinedExisting++;
-					}
-					await groupRepository.UpdateAsync(existingGroup, ct);
+					AddToGroup(existingGroup, newDoc, 0.9m);
+					grouped.Add(newDoc.Id);
+					phase2Joined++;
+					joinedExisting++;
 				}
-			}
-			else if (docsWithHash.Count > 1)
-			{
-				var ungroupedOfHash = docsWithHash.Where(d => !grouped.Contains(d.Id)).ToList();
-				if (ungroupedOfHash.Count > 1)
-				{
-					var group = CreateGroup(nextGroupNumber++, ungroupedOfHash,
-						MatchConfidence.High, "Fuzzy content match (top-K tokens, incremental)",
-						ungroupedOfHash[0], 0.9m);
-					newGroups.Add(group);
-					await groupRepository.AddAsync(group, ct);
-					grouped.UnionWith(ungroupedOfHash.Select(d => d.Id));
-					phase2NewGroups++;
-				}
+				await groupRepository.UpdateAsync(existingGroup, ct);
 			}
 		}
 
@@ -852,9 +825,6 @@ public class GroupingOrchestrator(
 		progress?.Report(new GroupingProgress("Phase 3",
 			$"Querying {remainingNewDocs.Count} new docs against {existingSignatures.Count} existing signatures...", 60));
 
-		// Track new docs that didn't match existing — for new-to-new comparison
-		var unmatchedNewIndices = new List<int>();
-
 		for (var i = 0; i < remainingNewDocs.Count; i++)
 		{
 			var newDoc = remainingNewDocs[i];
@@ -898,90 +868,12 @@ public class GroupingOrchestrator(
 					joinedExisting++;
 				}
 			}
-			else
-			{
-				unmatchedNewIndices.Add(i);
-			}
 
 			if ((i + 1) % 100 == 0)
 			{
 				var pct = 60 + (int)(15.0 * (i + 1) / remainingNewDocs.Count);
 				progress?.Report(new GroupingProgress("Phase 3",
 					$"Processed {i + 1}/{remainingNewDocs.Count} docs ({phase3Joined} joined existing)...", pct));
-			}
-		}
-
-		// New-to-new comparison via LSH among unmatched new docs
-		if (unmatchedNewIndices.Count >= 2)
-		{
-			progress?.Report(new GroupingProgress("Phase 3",
-				$"Comparing {unmatchedNewIndices.Count} unmatched new docs against each other...", 76));
-
-			var newOnlyIndex = new MinHashLshIndex(bands: 20, rowsPerBand: 5);
-			for (var i = 0; i < unmatchedNewIndices.Count; i++)
-				newOnlyIndex.Add(i, newSignatures[unmatchedNewIndices[i]]);
-
-			var newPairs = newOnlyIndex.GetCandidatePairs();
-			var simGroups = new Dictionary<int, List<int>>();
-			var docToSimGroup = new Dictionary<int, int>();
-			var tempGroupId = 0;
-
-			foreach (var (a, b) in newPairs)
-			{
-				var idxA = unmatchedNewIndices[a];
-				var idxB = unmatchedNewIndices[b];
-				var sim = fingerprinter.CalculateSimilarityMetrics(
-					remainingNewDocs[idxA].NormalizedText,
-					remainingNewDocs[idxB].NormalizedText);
-
-				if (sim.JaccardSimilarity < 0.70) continue;
-
-				// Union-find merge
-				if (docToSimGroup.TryGetValue(a, out var gidA) && docToSimGroup.TryGetValue(b, out var gidB))
-				{
-					if (gidA != gidB)
-					{
-						simGroups[gidA].AddRange(simGroups[gidB]);
-						foreach (var idx in simGroups[gidB])
-							docToSimGroup[idx] = gidA;
-						simGroups.Remove(gidB);
-					}
-				}
-				else if (docToSimGroup.TryGetValue(a, out var existing))
-				{
-					simGroups[existing].Add(b);
-					docToSimGroup[b] = existing;
-				}
-				else if (docToSimGroup.TryGetValue(b, out existing))
-				{
-					simGroups[existing].Add(a);
-					docToSimGroup[a] = existing;
-				}
-				else
-				{
-					simGroups[tempGroupId] = [a, b];
-					docToSimGroup[a] = tempGroupId;
-					docToSimGroup[b] = tempGroupId;
-					tempGroupId++;
-				}
-			}
-
-			foreach (var (_, memberIndices) in simGroups)
-			{
-				var docsInGroup = memberIndices
-					.Select(i => remainingNewDocs[unmatchedNewIndices[i]])
-					.Where(d => !grouped.Contains(d.Id))
-					.ToList();
-
-				if (docsInGroup.Count <= 1) continue;
-
-				var group = CreateGroup(nextGroupNumber++, docsInGroup,
-					MatchConfidence.Medium, "Moderate content similarity (70%+ Jaccard, incremental new-to-new)",
-					docsInGroup[0], 0.75m);
-				newGroups.Add(group);
-				await groupRepository.AddAsync(group, ct);
-				grouped.UnionWith(docsInGroup.Select(d => d.Id));
-				phase3NewGroups++;
 			}
 		}
 
@@ -1027,7 +919,7 @@ public class GroupingOrchestrator(
 		metrics.Phase4Seconds = phaseSw.Elapsed.TotalSeconds;
 		metrics.Phase4Singletons = singletonCount;
 		metrics.TotalSeconds = totalSw.Elapsed.TotalSeconds;
-		metrics.TotalGroups = existingGroups.Count + newGroups.Count;
+		metrics.TotalGroups = existingGroupCount + newGroups.Count;
 		metrics.TotalDocuments = newDocs.Count;
 		metrics.JoinedExistingGroups = joinedExisting;
 		metrics.NewGroupsFormed = newGroups.Count;

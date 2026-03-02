@@ -1,5 +1,6 @@
 using DocGrouping.Application.Interfaces;
 using DocGrouping.Domain.Interfaces;
+using DocGrouping.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Mvc;
 
 namespace DocGrouping.Web.Controllers;
@@ -9,7 +10,9 @@ namespace DocGrouping.Web.Controllers;
 public class DocumentsController(
 	IDocumentIngestionService ingestionService,
 	IDocumentRepository documentRepository,
-	IGroupingOrchestrator groupingOrchestrator) : ControllerBase
+	IGroupingOrchestrator groupingOrchestrator,
+	IDocumentGeneratorService generatorService,
+	DocGroupingDbContext dbContext) : ControllerBase
 {
 	[HttpPost("upload")]
 	public async Task<IActionResult> Upload(IFormFileCollection files, CancellationToken ct)
@@ -174,6 +177,100 @@ public class DocumentsController(
 			doc.CreatedAt
 		});
 	}
+	[HttpPost("generate-bulk")]
+	public async Task<IActionResult> GenerateBulk([FromBody] BulkGenerateRequest request, CancellationToken ct)
+	{
+		var sw = System.Diagnostics.Stopwatch.StartNew();
+
+		// Generate
+		var generated = generatorService.GenerateBulkDocuments(request.Count);
+		var genTime = sw.Elapsed.TotalSeconds;
+
+		// Ingest
+		var ingestStart = sw.Elapsed;
+		foreach (var doc in generated)
+			await ingestionService.IngestTextAsync(doc.FileName, doc.Content, doc.DocumentType, ct);
+		var ingestTime = (sw.Elapsed - ingestStart).TotalSeconds;
+
+		// Mark canonical if requested
+		if (request.MarkCanonical)
+		{
+			var allDocs = await documentRepository.GetAllAsync(ct);
+			var generatedNames = generated.Select(g => g.FileName).ToHashSet();
+			foreach (var doc in allDocs.Where(d => generatedNames.Contains(d.FileName) && !d.IsCanonicalReference))
+			{
+				doc.IsCanonicalReference = true;
+				await documentRepository.UpdateAsync(doc, ct);
+			}
+		}
+
+		// Clear change tracker so grouping starts with a clean slate
+		// (ingestion leaves tracked entities that can cause concurrency issues)
+		dbContext.ChangeTracker.Clear();
+
+		// Group
+		var groupStart = sw.Elapsed;
+		Application.Interfaces.GroupingMetrics? metrics = null;
+		var progress = new Progress<Application.Interfaces.GroupingProgress>(p =>
+		{
+			if (p.Metrics is not null) metrics = p.Metrics;
+		});
+
+		if (request.Mode == "incremental")
+			await groupingOrchestrator.GroupIncrementalAsync(progress, ct);
+		else
+			await groupingOrchestrator.GroupAllDocumentsAsync(progress, ct);
+
+		var groupTime = (sw.Elapsed - groupStart).TotalSeconds;
+		sw.Stop();
+
+		dbContext.ChangeTracker.Clear();
+		var stats = await groupingOrchestrator.GetStatisticsAsync(ct);
+
+		return Ok(new
+		{
+			generated = generated.Count,
+			mark_canonical = request.MarkCanonical,
+			mode = request.Mode,
+			generation_seconds = genTime,
+			ingestion_seconds = ingestTime,
+			grouping_seconds = groupTime,
+			total_seconds = sw.Elapsed.TotalSeconds,
+			statistics = stats,
+			metrics
+		});
+	}
+
+	[HttpPost("process-incremental")]
+	public async Task<IActionResult> ProcessIncremental(CancellationToken ct)
+	{
+		var sw = System.Diagnostics.Stopwatch.StartNew();
+		Application.Interfaces.GroupingMetrics? metrics = null;
+		var progress = new Progress<Application.Interfaces.GroupingProgress>(p =>
+		{
+			if (p.Metrics is not null) metrics = p.Metrics;
+		});
+
+		var groups = await groupingOrchestrator.GroupIncrementalAsync(progress, ct);
+		sw.Stop();
+
+		var stats = await groupingOrchestrator.GetStatisticsAsync(ct);
+
+		return Ok(new
+		{
+			statistics = stats,
+			group_count = groups.Count,
+			processing_time_seconds = sw.Elapsed.TotalSeconds,
+			metrics
+		});
+	}
+}
+
+public class BulkGenerateRequest
+{
+	public int Count { get; set; } = 100;
+	public bool MarkCanonical { get; set; }
+	public string Mode { get; set; } = "full";
 }
 
 public class LoadSamplesRequest
