@@ -66,6 +66,8 @@ public class GroupingOrchestrator(
 
 		progress?.Report(new GroupingProgress("Phase 1", $"Found {textHashIndex.Count} hash collisions, evaluating rules...", 10));
 
+		const int groupBatchSize = 500;
+		var groupBatch = new List<DocumentGroup>(groupBatchSize);
 		foreach (var (textHash, matchingDocs) in textHashIndex)
 		{
 			var shouldGroup = true;
@@ -101,8 +103,21 @@ public class GroupingOrchestrator(
 				1.0m);
 
 			groups.Add(group);
-			await groupRepository.AddAsync(group, ct);
+			groupBatch.Add(group);
 			grouped.UnionWith(matchingDocs.Select(d => d.Id));
+
+			if (groupBatch.Count >= groupBatchSize)
+			{
+				await groupRepository.AddRangeAsync(groupBatch, ct);
+				dbContext.ChangeTracker.Clear();
+				groupBatch.Clear();
+			}
+		}
+		if (groupBatch.Count > 0)
+		{
+			await groupRepository.AddRangeAsync(groupBatch, ct);
+			dbContext.ChangeTracker.Clear();
+			groupBatch.Clear();
 		}
 
 		metrics.Phase1Seconds = phaseSw.Elapsed.TotalSeconds;
@@ -125,6 +140,7 @@ public class GroupingOrchestrator(
 			$"Found {fuzzyHashIndex.Count} fuzzy hash collisions among {documents.Count - grouped.Count} remaining docs...", 30));
 
 		var phase2Count = 0;
+		groupBatch.Clear();
 		foreach (var (fuzzyHash, matchingDocs) in fuzzyHashIndex)
 		{
 			var ungrouped = matchingDocs.Where(d => !grouped.Contains(d.Id)).ToList();
@@ -139,9 +155,24 @@ public class GroupingOrchestrator(
 				0.9m);
 
 			groups.Add(group);
-			await groupRepository.AddAsync(group, ct);
+			groupBatch.Add(group);
 			grouped.UnionWith(ungrouped.Select(d => d.Id));
 			phase2Count++;
+
+			if (groupBatch.Count >= groupBatchSize)
+			{
+				await groupRepository.AddRangeAsync(groupBatch, ct);
+				dbContext.ChangeTracker.Clear();
+				groupBatch.Clear();
+				progress?.Report(new GroupingProgress("Phase 2",
+					$"Saved {phase2Count} groups... {grouped.Count}/{documents.Count} docs grouped", 35));
+			}
+		}
+		if (groupBatch.Count > 0)
+		{
+			await groupRepository.AddRangeAsync(groupBatch, ct);
+			dbContext.ChangeTracker.Clear();
+			groupBatch.Clear();
 		}
 
 		metrics.Phase2Seconds = phaseSw.Elapsed.TotalSeconds;
@@ -292,6 +323,7 @@ public class GroupingOrchestrator(
 		metrics.Phase3VerifiedPairs = verifiedPairs.Count;
 
 		var phase3Count = 0;
+		groupBatch.Clear();
 		foreach (var (_, docsInGroup) in similarityGroups)
 		{
 			if (docsInGroup.Count <= 1) continue;
@@ -305,9 +337,22 @@ public class GroupingOrchestrator(
 				0.75m);
 
 			groups.Add(group);
-			await groupRepository.AddAsync(group, ct);
+			groupBatch.Add(group);
 			grouped.UnionWith(docsInGroup.Select(d => d.Id));
 			phase3Count++;
+
+			if (groupBatch.Count >= groupBatchSize)
+			{
+				await groupRepository.AddRangeAsync(groupBatch, ct);
+				dbContext.ChangeTracker.Clear();
+				groupBatch.Clear();
+			}
+		}
+		if (groupBatch.Count > 0)
+		{
+			await groupRepository.AddRangeAsync(groupBatch, ct);
+			dbContext.ChangeTracker.Clear();
+			groupBatch.Clear();
 		}
 
 		metrics.Phase3Seconds = phaseSw.Elapsed.TotalSeconds;
@@ -336,6 +381,8 @@ public class GroupingOrchestrator(
 			$"Creating singleton groups for {ungroupedForSingleton.Count} unmatched docs...", 80));
 
 		var singletonCount = 0;
+		const int singletonBatchSize = 500;
+		var singletonBatch = new List<DocumentGroup>(singletonBatchSize);
 		foreach (var doc in ungroupedForSingleton)
 		{
 			var group = CreateGroup(
@@ -347,15 +394,23 @@ public class GroupingOrchestrator(
 				0m);
 
 			groups.Add(group);
-			await groupRepository.AddAsync(group, ct);
+			singletonBatch.Add(group);
 			singletonCount++;
 
-			if (singletonCount % 100 == 0)
+			if (singletonBatch.Count >= singletonBatchSize)
 			{
+				await groupRepository.AddRangeAsync(singletonBatch, ct);
+				dbContext.ChangeTracker.Clear();
+				singletonBatch.Clear();
 				var pct = 80 + (int)(18.0 * singletonCount / ungroupedForSingleton.Count);
 				progress?.Report(new GroupingProgress("Phase 4",
 					$"Creating singletons... {singletonCount}/{ungroupedForSingleton.Count}", pct));
 			}
+		}
+		if (singletonBatch.Count > 0)
+		{
+			await groupRepository.AddRangeAsync(singletonBatch, ct);
+			dbContext.ChangeTracker.Clear();
 		}
 
 		metrics.Phase4Seconds = phaseSw.Elapsed.TotalSeconds;
@@ -899,21 +954,31 @@ public class GroupingOrchestrator(
 			$"Creating singleton groups for {singletonDocs.Count} unmatched docs...", 80));
 
 		var singletonCount = 0;
+		const int singletonBatchSize = 500;
+		var singletonBatch = new List<DocumentGroup>(singletonBatchSize);
 		foreach (var doc in singletonDocs)
 		{
 			var group = CreateGroup(nextGroupNumber++, [doc],
 				MatchConfidence.None, "No matches found (unique document, incremental)",
 				doc, 0m);
 			newGroups.Add(group);
-			await groupRepository.AddAsync(group, ct);
+			singletonBatch.Add(group);
 			singletonCount++;
 
-			if (singletonCount % 100 == 0)
+			if (singletonBatch.Count >= singletonBatchSize)
 			{
+				await groupRepository.AddRangeAsync(singletonBatch, ct);
+				dbContext.ChangeTracker.Clear();
+				singletonBatch.Clear();
 				var pct = 80 + (int)(18.0 * singletonCount / singletonDocs.Count);
 				progress?.Report(new GroupingProgress("Phase 4",
 					$"Creating singletons... {singletonCount}/{singletonDocs.Count}", pct));
 			}
+		}
+		if (singletonBatch.Count > 0)
+		{
+			await groupRepository.AddRangeAsync(singletonBatch, ct);
+			dbContext.ChangeTracker.Clear();
 		}
 
 		metrics.Phase4Seconds = phaseSw.Elapsed.TotalSeconds;

@@ -13,6 +13,7 @@ public interface IDocumentGroupRepository
 	Task<int> GetCountAsync(MatchConfidence? confidence = null, CancellationToken ct = default);
 	Task<int> GetNextGroupNumberAsync(CancellationToken ct = default);
 	Task AddAsync(DocumentGroup group, CancellationToken ct = default);
+	Task AddRangeAsync(IEnumerable<DocumentGroup> groups, CancellationToken ct = default);
 	Task UpdateAsync(DocumentGroup group, CancellationToken ct = default);
 	Task DeleteAsync(Guid id, CancellationToken ct = default);
 	Task DeleteAllAsync(CancellationToken ct = default);

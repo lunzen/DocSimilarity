@@ -1,4 +1,5 @@
 using DocGrouping.Application.Interfaces;
+using DocGrouping.Domain.Entities;
 using DocGrouping.Domain.Interfaces;
 using DocGrouping.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Mvc;
@@ -186,26 +187,27 @@ public class DocumentsController(
 		var generated = generatorService.GenerateBulkDocuments(request.Count);
 		var genTime = sw.Elapsed.TotalSeconds;
 
-		// Ingest
+		// Batch ingest
 		var ingestStart = sw.Elapsed;
-		foreach (var doc in generated)
-			await ingestionService.IngestTextAsync(doc.FileName, doc.Content, doc.DocumentType, ct);
+		var items = generated
+			.Select(g => (g.FileName, g.Content, (string?)g.DocumentType))
+			.ToList();
+		var docs = await ingestionService.IngestTextBatchAsync(items, batchSize: 500, ct: ct);
 		var ingestTime = (sw.Elapsed - ingestStart).TotalSeconds;
 
-		// Mark canonical if requested
+		// Mark canonical if requested — batch update
 		if (request.MarkCanonical)
 		{
-			var allDocs = await documentRepository.GetAllAsync(ct);
-			var generatedNames = generated.Select(g => g.FileName).ToHashSet();
-			foreach (var doc in allDocs.Where(d => generatedNames.Contains(d.FileName) && !d.IsCanonicalReference))
+			var canonicalBatch = new List<Document>();
+			foreach (var doc in docs.Where(d => !d.IsCanonicalReference))
 			{
 				doc.IsCanonicalReference = true;
-				await documentRepository.UpdateAsync(doc, ct);
+				canonicalBatch.Add(doc);
 			}
+			if (canonicalBatch.Count > 0)
+				await documentRepository.UpdateRangeAsync(canonicalBatch, ct);
 		}
 
-		// Clear change tracker so grouping starts with a clean slate
-		// (ingestion leaves tracked entities that can cause concurrency issues)
 		dbContext.ChangeTracker.Clear();
 
 		// Group

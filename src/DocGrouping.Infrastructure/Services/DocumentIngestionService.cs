@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using DocGrouping.Application.Interfaces;
 using DocGrouping.Domain.Entities;
 using DocGrouping.Domain.Interfaces;
+using DocGrouping.Infrastructure.Persistence;
 using DocGrouping.Infrastructure.TextProcessing;
 using Microsoft.Extensions.Logging;
 
@@ -9,6 +10,7 @@ namespace DocGrouping.Infrastructure.Services;
 
 public class DocumentIngestionService(
 	IDocumentRepository documentRepository,
+	DocGroupingDbContext dbContext,
 	TextNormalizer normalizer,
 	DocumentFingerprinter fingerprinter,
 	PdfTextExtractor pdfExtractor,
@@ -83,6 +85,63 @@ public class DocumentIngestionService(
 
 		await documentRepository.AddAsync(document, ct);
 		return document;
+	}
+
+	public async Task<List<Document>> IngestTextBatchAsync(
+		IReadOnlyList<(string FileName, string Text, string? DocumentType)> items,
+		int batchSize = 500,
+		IProgress<(int processed, int total)>? progress = null,
+		CancellationToken ct = default)
+	{
+		logger.LogInformation("Batch ingesting {Count} documents (batch size {BatchSize})", items.Count, batchSize);
+		var allDocuments = new List<Document>(items.Count);
+		var batch = new List<Document>(batchSize);
+
+		for (var i = 0; i < items.Count; i++)
+		{
+			ct.ThrowIfCancellationRequested();
+			var (fileName, text, documentType) = items[i];
+
+			var normalizedText = normalizer.Normalize(text);
+			var (textHash, fuzzyHash) = fingerprinter.GenerateAllFingerprints(normalizedText);
+			var tokens = normalizer.GetTokens(normalizedText);
+			var fileHash = fingerprinter.GenerateFileHash(System.Text.Encoding.UTF8.GetBytes(text));
+
+			batch.Add(new Document
+			{
+				FileName = fileName,
+				FilePath = string.Empty,
+				FileSizeBytes = System.Text.Encoding.UTF8.GetByteCount(text),
+				FileHash = fileHash,
+				OriginalText = text,
+				NormalizedText = normalizedText,
+				TextHash = textHash,
+				FuzzyHash = fuzzyHash,
+				WordCount = tokens.Count,
+				DocumentType = documentType
+			});
+
+			if (batch.Count >= batchSize)
+			{
+				await documentRepository.AddRangeAsync(batch, ct);
+				allDocuments.AddRange(batch);
+				dbContext.ChangeTracker.Clear();
+				batch.Clear();
+				progress?.Report((i + 1, items.Count));
+				logger.LogInformation("Ingested {Count}/{Total} documents", i + 1, items.Count);
+			}
+		}
+
+		if (batch.Count > 0)
+		{
+			await documentRepository.AddRangeAsync(batch, ct);
+			allDocuments.AddRange(batch);
+			dbContext.ChangeTracker.Clear();
+			progress?.Report((items.Count, items.Count));
+			logger.LogInformation("Ingested {Count}/{Total} documents", items.Count, items.Count);
+		}
+
+		return allDocuments;
 	}
 
 	public async Task<List<Document>> IngestDirectoryAsync(string directoryPath, CancellationToken ct = default)

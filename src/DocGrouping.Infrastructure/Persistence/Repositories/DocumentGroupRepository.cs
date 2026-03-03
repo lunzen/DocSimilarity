@@ -70,6 +70,12 @@ public class DocumentGroupRepository(DocGroupingDbContext db) : IDocumentGroupRe
 		await db.SaveChangesAsync(ct);
 	}
 
+	public async Task AddRangeAsync(IEnumerable<DocumentGroup> groups, CancellationToken ct = default)
+	{
+		db.DocumentGroups.AddRange(groups);
+		await db.SaveChangesAsync(ct);
+	}
+
 	public async Task UpdateAsync(DocumentGroup group, CancellationToken ct = default)
 	{
 		group.UpdatedAt = DateTimeOffset.UtcNow;
