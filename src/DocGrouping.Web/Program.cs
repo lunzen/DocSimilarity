@@ -6,6 +6,8 @@ using DocGrouping.Infrastructure.Persistence.Repositories;
 using DocGrouping.Infrastructure.Rules;
 using DocGrouping.Infrastructure.TextProcessing;
 using DocGrouping.Web.Components;
+using DocGrouping.Web.Middleware;
+using DocGrouping.Web.Services;
 using Microsoft.EntityFrameworkCore;
 using Serilog;
 
@@ -22,9 +24,24 @@ try
 		.ReadFrom.Configuration(context.Configuration)
 		.ReadFrom.Services(services));
 
-	// EF Core + PostgreSQL
-	builder.Services.AddDbContext<DocGroupingDbContext>(options =>
-		options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection")));
+	// Database switching services
+	builder.Services.AddSingleton<DatabaseSelectorState>();
+	builder.Services.AddSingleton<DatabaseConnectionResolver>();
+	builder.Services.AddSingleton<DatabaseInitializer>();
+	builder.Services.AddHttpContextAccessor();
+
+	// EF Core + PostgreSQL (dynamic connection per active database)
+	builder.Services.AddDbContext<DocGroupingDbContext>((sp, options) =>
+	{
+		var resolver = sp.GetRequiredService<DatabaseConnectionResolver>();
+		var httpContextAccessor = sp.GetService<IHttpContextAccessor>();
+		var dbState = sp.GetRequiredService<DatabaseSelectorState>();
+
+		var dbName = httpContextAccessor?.HttpContext?.Items["ActiveDatabase"] as string
+			?? dbState.ActiveDatabaseName;
+
+		options.UseNpgsql(resolver.GetConnectionString(dbName));
+	});
 
 	// Repositories
 	builder.Services.AddScoped<IDocumentRepository, DocumentRepository>();
@@ -53,11 +70,12 @@ try
 
 	var app = builder.Build();
 
-	// Apply migrations on startup
-	using (var scope = app.Services.CreateScope())
+	// Ensure all configured databases exist
+	var dbInitializer = app.Services.GetRequiredService<DatabaseInitializer>();
+	var dbState = app.Services.GetRequiredService<DatabaseSelectorState>();
+	foreach (var dbName in dbState.AvailableDatabases)
 	{
-		var db = scope.ServiceProvider.GetRequiredService<DocGroupingDbContext>();
-		await db.Database.EnsureCreatedAsync();
+		await dbInitializer.EnsureCreatedAsync(dbName);
 	}
 
 	if (!app.Environment.IsDevelopment())
@@ -66,6 +84,7 @@ try
 	}
 
 	app.UseSerilogRequestLogging();
+	app.UseMiddleware<DatabaseSelectionMiddleware>();
 	app.UseStatusCodePagesWithReExecute("/not-found", createScopeForStatusCodePages: true);
 	app.UseAntiforgery();
 
