@@ -18,6 +18,7 @@ public class DocumentGroupMembershipConfiguration : IEntityTypeConfiguration<Doc
 		builder.Property(m => m.SimilarityScore).HasColumnName("similarity_score").HasPrecision(5, 4);
 
 		builder.HasIndex(m => m.DocumentId).IsUnique();
+		builder.HasIndex(m => m.GroupId);
 
 		builder.HasOne(m => m.Document)
 			.WithOne(d => d.GroupMembership)

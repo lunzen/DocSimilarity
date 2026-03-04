@@ -18,13 +18,13 @@
 	@* KPI row *@
 	<div class="row g-3 mb-4">
 		<div class="col-6 col-md-3">
-			<KpiCard Label="Total Documents" Value="@_stats.TotalDocuments.ToString()" Icon="bi-file-earmark-text" Color="#0d6efd" />
+			<KpiCard Label="Total Documents" Value="@_stats.TotalDocuments.ToString("N0")" Icon="bi-file-earmark-text" Color="#0d6efd" />
 		</div>
 		<div class="col-6 col-md-3">
-			<KpiCard Label="Total Groups" Value="@_stats.TotalGroups.ToString()" Icon="bi-collection" Color="#198754" />
+			<KpiCard Label="Total Groups" Value="@_stats.TotalGroups.ToString("N0")" Icon="bi-collection" Color="#198754" />
 		</div>
 		<div class="col-6 col-md-3">
-			<KpiCard Label="Duplicates Found" Value="@((_stats.TotalDocuments - _stats.TotalGroups).ToString())" Icon="bi-files" Color="#fd7e14" />
+			<KpiCard Label="Duplicates Found" Value="@((_stats.TotalDocuments - _stats.TotalGroups).ToString("N0"))" Icon="bi-files" Color="#fd7e14" />
 		</div>
 		<div class="col-6 col-md-3">
 			<KpiCard Label="Dedup Ratio" Value="@(_stats.DeduplicationRatio.ToString("P0"))" Icon="bi-pie-chart" Color="#6f42c1" />
@@ -37,41 +37,41 @@
 		<ConfidenceBar Breakdown="@_stats.ConfidenceBreakdown" />
 	</div>
 
-	@* Filter and export bar *@
+	@* Filter bar *@
 	<div class="d-flex flex-wrap justify-content-between align-items-center mb-3">
 		<div class="btn-group" role="group">
-			<button class="btn @(_filter == null ? "btn-primary" : "btn-outline-primary")" @onclick="() => SetFilter(null)">
-				All (@_allGroups.Count)
+			<button class="btn @(_confidenceFilter == null ? "btn-primary" : "btn-outline-primary")" @onclick="() => SetFilter(null)">
+				All (@_totalCount.ToString("N0"))
 			</button>
-			<button class="btn @(_filter == "VeryHigh" ? "btn-primary" : "btn-outline-primary")" @onclick='() => SetFilter("VeryHigh")'>
+			<button class="btn @(_confidenceFilter == "VeryHigh" ? "btn-primary" : "btn-outline-primary")" @onclick='() => SetFilter("VeryHigh")'>
 				VeryHigh
 			</button>
-			<button class="btn @(_filter == "High" ? "btn-primary" : "btn-outline-primary")" @onclick='() => SetFilter("High")'>
+			<button class="btn @(_confidenceFilter == "High" ? "btn-primary" : "btn-outline-primary")" @onclick='() => SetFilter("High")'>
 				High
 			</button>
-			<button class="btn @(_filter == "Medium" ? "btn-primary" : "btn-outline-primary")" @onclick='() => SetFilter("Medium")'>
+			<button class="btn @(_confidenceFilter == "Medium" ? "btn-primary" : "btn-outline-primary")" @onclick='() => SetFilter("Medium")'>
 				Medium
 			</button>
-			<button class="btn @(_filter == "None" ? "btn-primary" : "btn-outline-primary")" @onclick='() => SetFilter("None")'>
+			<button class="btn @(_confidenceFilter == "None" ? "btn-primary" : "btn-outline-primary")" @onclick='() => SetFilter("None")'>
 				None
 			</button>
 		</div>
 		<div class="d-flex gap-2 mt-2 mt-md-0">
-			<button class="btn btn-outline-secondary btn-sm" @onclick="ExportJson">
-				<i class="bi bi-filetype-json"></i> Export JSON
+			<button class="btn btn-outline-secondary btn-sm" @onclick="ExportJson" disabled="@_exporting">
+				<i class="bi bi-filetype-json"></i> Export JSON (page)
 			</button>
-			<button class="btn btn-outline-secondary btn-sm" @onclick="ExportCsv">
-				<i class="bi bi-filetype-csv"></i> Export CSV
+			<button class="btn btn-outline-secondary btn-sm" @onclick="ExportCsv" disabled="@_exporting">
+				<i class="bi bi-filetype-csv"></i> Export CSV (page)
 			</button>
 		</div>
 	</div>
 
 	@* Group cards *@
-	@if (FilteredGroups.Count == 0)
+	@if (_pageGroups.Count == 0 && !_loading)
 	{
 		<div class="alert alert-secondary text-center">
 			<i class="bi bi-inbox"></i> No groups to display.
-			@if (_allGroups.Count == 0)
+			@if (_totalCount == 0)
 			{
 				<a href="/" class="alert-link">Upload documents first.</a>
 			}
@@ -79,100 +79,183 @@
 	}
 	else
 	{
-		@foreach (var group in FilteredGroups)
+		@foreach (var group in _pageGroups)
 		{
 			<GroupCard Group="@group" />
 		}
 	}
+
+	@* Pagination *@
+	@if (_totalPages > 1)
+	{
+		<nav class="mt-4 mb-3">
+			<ul class="pagination justify-content-center">
+				<li class="page-item @(_page <= 1 ? "disabled" : "")">
+					<button class="page-link" @onclick="() => GoToPage(1)"><i class="bi bi-chevron-double-left"></i></button>
+				</li>
+				<li class="page-item @(_page <= 1 ? "disabled" : "")">
+					<button class="page-link" @onclick="() => GoToPage(_page - 1)"><i class="bi bi-chevron-left"></i></button>
+				</li>
+
+				@foreach (var p in GetPageRange())
+				{
+					<li class="page-item @(p == _page ? "active" : "")">
+						<button class="page-link" @onclick="() => GoToPage(p)">@p</button>
+					</li>
+				}
+
+				<li class="page-item @(_page >= _totalPages ? "disabled" : "")">
+					<button class="page-link" @onclick="() => GoToPage(_page + 1)"><i class="bi bi-chevron-right"></i></button>
+				</li>
+				<li class="page-item @(_page >= _totalPages ? "disabled" : "")">
+					<button class="page-link" @onclick="() => GoToPage(_totalPages)"><i class="bi bi-chevron-double-right"></i></button>
+				</li>
+			</ul>
+			<div class="text-center text-muted small">
+				Page @_page of @_totalPages.ToString("N0") &middot; Showing @((_page - 1) * PageSize + 1)–@(Math.Min(_page * PageSize, _totalCount)) of @_totalCount.ToString("N0") groups
+			</div>
+		</nav>
+	}
 }
 
 @code {
-	private StatisticsDto? _stats;
-	private List<GroupDto> _allGroups = [];
-	private string? _filter;
-	private bool _loading = true;
+	private const int PageSize = 50;
 
-	private List<GroupDto> FilteredGroups => _filter is null
-		? _allGroups
-		: _allGroups.Where(g => string.Equals(g.Confidence, _filter, StringComparison.OrdinalIgnoreCase)).ToList();
+	private StatisticsDto? _stats;
+	private List<GroupDto> _pageGroups = [];
+	private string? _confidenceFilter;
+	private int _page = 1;
+	private int _totalCount;
+	private int _totalPages;
+	private bool _loading = true;
+	private bool _exporting;
 
 	protected override async Task OnInitializedAsync()
 	{
+		await LoadPageAsync();
+	}
+
+	private async Task LoadPageAsync()
+	{
+		_loading = true;
+		StateHasChanged();
+
 		try
 		{
 			_stats = await Orchestrator.GetStatisticsAsync();
-			var groups = await GroupRepo.GetAllAsync();
 
-			_allGroups = groups
-				.OrderByDescending(g => g.Confidence)
-				.ThenBy(g => g.GroupNumber)
-				.Select(g =>
+			var confidence = ParseConfidence(_confidenceFilter);
+			_totalCount = await GroupRepo.GetCountAsync(confidence);
+			_totalPages = Math.Max(1, (int)Math.Ceiling((double)_totalCount / PageSize));
+
+			if (_page > _totalPages) _page = _totalPages;
+			if (_page < 1) _page = 1;
+
+			var groups = await GroupRepo.GetPagedAsync(_page, PageSize, confidence);
+
+			_pageGroups = groups.Select(g =>
+			{
+				var dto = new GroupDto
 				{
-					var dto = new GroupDto
+					Id = g.Id,
+					GroupNumber = g.GroupNumber,
+					Confidence = g.Confidence.ToString(),
+					MatchReason = g.MatchReason,
+					DocumentCount = g.DocumentCount,
+					CanonicalFileName = g.CanonicalDocument?.FileName,
+					Documents = g.Memberships.Select(m => new DocumentDto
 					{
-						Id = g.Id,
-						GroupNumber = g.GroupNumber,
-						Confidence = g.Confidence.ToString(),
-						MatchReason = g.MatchReason,
-						DocumentCount = g.DocumentCount,
-						CanonicalFileName = g.CanonicalDocument?.FileName,
-						Documents = g.Memberships.Select(m => new DocumentDto
-						{
-							Id = m.Document.Id,
-							FileName = m.Document.FileName,
-							WordCount = m.Document.WordCount,
-							IsCanonical = m.IsCanonical,
-							PreviewText = m.Document.OriginalText.Length > 200
-								? m.Document.OriginalText[..200] + "..."
-								: m.Document.OriginalText,
-							DocumentType = m.Document.DocumentType,
-							CreatedAt = m.Document.CreatedAt
-						}).ToList()
+						Id = m.Document.Id,
+						FileName = m.Document.FileName,
+						WordCount = m.Document.WordCount,
+						IsCanonical = m.IsCanonical,
+						PreviewText = m.Document.OriginalText.Length > 200
+							? m.Document.OriginalText[..200] + "..."
+							: m.Document.OriginalText,
+						DocumentType = m.Document.DocumentType,
+						CreatedAt = m.Document.CreatedAt
+					}).ToList()
+				};
+
+				if (g.Memberships.Count >= 2)
+				{
+					var docs = g.Memberships.OrderByDescending(m => m.IsCanonical).ToList();
+					var metrics = Fingerprinter.CalculateSimilarityMetrics(
+						docs[0].Document.NormalizedText,
+						docs[1].Document.NormalizedText);
+
+					dto.MatchExplanation = new MatchExplanationDto
+					{
+						JaccardSimilarity = metrics.JaccardSimilarity,
+						OverlapCoefficient = metrics.OverlapCoefficient,
+						FuzzySignatureMatch = metrics.FuzzySignatureJaccard,
+						CommonTokensCount = metrics.CommonTokens,
+						TotalTokensDoc1 = metrics.TokenCount1,
+						TotalTokensDoc2 = metrics.TokenCount2,
+						MatchType = g.Confidence.ToString()
 					};
+				}
 
-					if (g.Memberships.Count >= 2)
-					{
-						var docs = g.Memberships.OrderByDescending(m => m.IsCanonical).ToList();
-						var metrics = Fingerprinter.CalculateSimilarityMetrics(
-							docs[0].Document.NormalizedText,
-							docs[1].Document.NormalizedText);
-
-						dto.MatchExplanation = new MatchExplanationDto
-						{
-							JaccardSimilarity = metrics.JaccardSimilarity,
-							OverlapCoefficient = metrics.OverlapCoefficient,
-							FuzzySignatureMatch = metrics.FuzzySignatureJaccard,
-							CommonTokensCount = metrics.CommonTokens,
-							TotalTokensDoc1 = metrics.TokenCount1,
-							TotalTokensDoc2 = metrics.TokenCount2,
-							MatchType = g.Confidence.ToString()
-						};
-					}
-
-					return dto;
-				}).ToList();
+				return dto;
+			}).ToList();
 		}
 		catch (Exception ex)
 		{
-			Logger.LogError(ex, "Error loading results");
+			Logger.LogError(ex, "Error loading results page {Page}", _page);
 		}
 		finally
 		{
 			_loading = false;
+			StateHasChanged();
 		}
 	}
 
-	private void SetFilter(string? filter) => _filter = filter;
+	private async Task SetFilter(string? filter)
+	{
+		_confidenceFilter = filter;
+		_page = 1;
+		await LoadPageAsync();
+	}
+
+	private async Task GoToPage(int page)
+	{
+		if (page < 1 || page > _totalPages || page == _page) return;
+		_page = page;
+		await LoadPageAsync();
+	}
+
+	private IEnumerable<int> GetPageRange()
+	{
+		const int window = 3;
+		var start = Math.Max(1, _page - window);
+		var end = Math.Min(_totalPages, _page + window);
+		return Enumerable.Range(start, end - start + 1);
+	}
+
+	private static MatchConfidence? ParseConfidence(string? filter) => filter switch
+	{
+		"VeryHigh" => MatchConfidence.VeryHigh,
+		"High" => MatchConfidence.High,
+		"Medium" => MatchConfidence.Medium,
+		"None" => MatchConfidence.None,
+		_ => null
+	};
 
 	private async Task ExportJson()
 	{
-		var json = ExportService.ExportGroupsAsJson(FilteredGroups);
+		_exporting = true;
+		StateHasChanged();
+		var json = ExportService.ExportGroupsAsJson(_pageGroups);
 		await ExportService.DownloadFileAsync(JS, "docgrouping-results.json", json, "application/json");
+		_exporting = false;
 	}
 
 	private async Task ExportCsv()
 	{
-		var csv = ExportService.ExportGroupsAsCsv(FilteredGroups);
+		_exporting = true;
+		StateHasChanged();
+		var csv = ExportService.ExportGroupsAsCsv(_pageGroups);
 		await ExportService.DownloadFileAsync(JS, "docgrouping-results.csv", csv, "text/csv");
+		_exporting = false;
 	}
 }

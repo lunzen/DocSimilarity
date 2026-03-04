@@ -1,4 +1,5 @@
 using DocGrouping.Domain.Entities;
+using DocGrouping.Domain.Projections;
 
 namespace DocGrouping.Domain.Interfaces;
 
@@ -20,4 +21,9 @@ public interface IDocumentRepository
 	Task UpdateAsync(Document document, CancellationToken ct = default);
 	Task UpdateRangeAsync(IEnumerable<Document> documents, CancellationToken ct = default);
 	Task DeleteAsync(Guid id, CancellationToken ct = default);
+
+	// Lightweight projection queries for scalable incremental grouping
+	Task<List<DocumentHashProjection>> GetUngroupedHashesAsync(CancellationToken ct = default);
+	Task<List<DocumentGroupLookup>> GetGroupedByTextHashesAsync(IEnumerable<string> textHashes, CancellationToken ct = default);
+	Task<List<DocumentGroupLookup>> GetGroupedByFuzzyHashesAsync(IEnumerable<string> fuzzyHashes, CancellationToken ct = default);
 }

@@ -1,5 +1,6 @@
 using DocGrouping.Domain.Entities;
 using DocGrouping.Domain.Interfaces;
+using DocGrouping.Domain.Projections;
 using Microsoft.EntityFrameworkCore;
 
 namespace DocGrouping.Infrastructure.Persistence.Repositories;
@@ -72,4 +73,25 @@ public class DocumentRepository(DocGroupingDbContext db) : IDocumentRepository
 			await db.SaveChangesAsync(ct);
 		}
 	}
+
+	public async Task<List<DocumentHashProjection>> GetUngroupedHashesAsync(CancellationToken ct = default)
+		=> await db.Documents
+			.AsNoTracking()
+			.Where(d => d.GroupMembership == null)
+			.Select(d => new DocumentHashProjection(d.Id, d.TextHash, d.FuzzyHash, d.NormalizedText))
+			.ToListAsync(ct);
+
+	public async Task<List<DocumentGroupLookup>> GetGroupedByTextHashesAsync(IEnumerable<string> textHashes, CancellationToken ct = default)
+		=> await db.Documents
+			.AsNoTracking()
+			.Where(d => textHashes.Contains(d.TextHash) && d.GroupMembership != null)
+			.Select(d => new DocumentGroupLookup(d.Id, d.TextHash, d.GroupMembership!.GroupId))
+			.ToListAsync(ct);
+
+	public async Task<List<DocumentGroupLookup>> GetGroupedByFuzzyHashesAsync(IEnumerable<string> fuzzyHashes, CancellationToken ct = default)
+		=> await db.Documents
+			.AsNoTracking()
+			.Where(d => fuzzyHashes.Contains(d.FuzzyHash) && d.GroupMembership != null)
+			.Select(d => new DocumentGroupLookup(d.Id, d.FuzzyHash, d.GroupMembership!.GroupId))
+			.ToListAsync(ct);
 }

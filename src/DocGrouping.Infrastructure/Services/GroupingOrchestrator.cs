@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using DocGrouping.Application.DTOs;
 using DocGrouping.Application.Interfaces;
+using DocGrouping.Domain.Projections;
 using DocGrouping.Domain.Entities;
 using DocGrouping.Domain.Enums;
 using DocGrouping.Domain.Interfaces;
@@ -686,23 +687,37 @@ public class GroupingOrchestrator(
 
 	public async Task<StatisticsDto> GetStatisticsAsync(CancellationToken ct = default)
 	{
-		var groups = await groupRepository.GetAllAsync(ct);
-		var totalDocs = groups.Sum(g => g.DocumentCount);
+		// Lightweight aggregate query — no entity loading
+		var summaries = await dbContext.DocumentGroups
+			.AsNoTracking()
+			.GroupBy(g => g.Confidence)
+			.Select(grp => new
+			{
+				Confidence = grp.Key,
+				Count = grp.Count(),
+				TotalDocs = grp.Sum(g => g.DocumentCount),
+				Duplicates = grp.Count(g => g.DocumentCount > 1),
+				Singletons = grp.Count(g => g.DocumentCount == 1)
+			})
+			.ToListAsync(ct);
+
+		var totalDocs = summaries.Sum(s => s.TotalDocs);
+		var totalGroups = summaries.Sum(s => s.Count);
 
 		return new StatisticsDto
 		{
 			TotalDocuments = totalDocs,
-			TotalGroups = groups.Count,
-			GroupsWithDuplicates = groups.Count(g => g.DocumentCount > 1),
-			SingletonGroups = groups.Count(g => g.DocumentCount == 1),
+			TotalGroups = totalGroups,
+			GroupsWithDuplicates = summaries.Sum(s => s.Duplicates),
+			SingletonGroups = summaries.Sum(s => s.Singletons),
 			ConfidenceBreakdown = new Dictionary<string, int>
 			{
-				["very_high"] = groups.Count(g => g.Confidence == MatchConfidence.VeryHigh),
-				["high"] = groups.Count(g => g.Confidence == MatchConfidence.High),
-				["medium"] = groups.Count(g => g.Confidence == MatchConfidence.Medium),
-				["none"] = groups.Count(g => g.Confidence == MatchConfidence.None),
+				["very_high"] = summaries.FirstOrDefault(s => s.Confidence == MatchConfidence.VeryHigh)?.Count ?? 0,
+				["high"] = summaries.FirstOrDefault(s => s.Confidence == MatchConfidence.High)?.Count ?? 0,
+				["medium"] = summaries.FirstOrDefault(s => s.Confidence == MatchConfidence.Medium)?.Count ?? 0,
+				["none"] = summaries.FirstOrDefault(s => s.Confidence == MatchConfidence.None)?.Count ?? 0,
 			},
-			DeduplicationRatio = totalDocs > 0 ? 1.0 - ((double)groups.Count / totalDocs) : 0
+			DeduplicationRatio = totalDocs > 0 ? 1.0 - ((double)totalGroups / totalDocs) : 0
 		};
 	}
 
@@ -717,11 +732,14 @@ public class GroupingOrchestrator(
 		var phaseSw = new Stopwatch();
 		var metrics = new GroupingMetrics();
 
+		const int queryChunkSize = 1000;
+		const int saveBatchSize = 500;
+
 		logger.LogInformation("Starting incremental grouping of ungrouped documents");
 		progress?.Report(new GroupingProgress("Init", "Loading ungrouped documents...", 2));
 
-		// Load ungrouped docs
-		var newDocs = await documentRepository.GetUngroupedAsync(ct);
+		// Load ungrouped docs as lightweight projections (drops OriginalText)
+		var newDocs = await documentRepository.GetUngroupedHashesAsync(ct);
 		if (newDocs.Count == 0)
 		{
 			logger.LogInformation("No ungrouped documents found — nothing to do");
@@ -752,47 +770,67 @@ public class GroupingOrchestrator(
 		var nextGroupNumber = await groupRepository.GetNextGroupNumberAsync(ct);
 		int joinedExisting = 0;
 
-		// ── Phase 1: Exact Hash (join existing groups or form new) ──
+		// ── Phase 1: Exact Hash — chunked lookup, batched saves ──
 		phaseSw.Restart();
 		progress?.Report(new GroupingProgress("Phase 1", "Matching exact text hashes...", 8));
 
 		var newDocTextHashes = newDocs.Select(d => d.TextHash).Distinct().ToList();
-		var existingByTextHash = await documentRepository.GetByTextHashesAsync(newDocTextHashes, ct);
-		// Build lookup: textHash → existing doc (that IS in a group)
-		var existingHashLookup = existingByTextHash
-			.Where(d => d.GroupMembership != null)
-			.GroupBy(d => d.TextHash)
-			.ToDictionary(g => g.Key, g => g.First());
 
-		// Group new docs by their text hash for batch processing
+		// Chunked hash→group lookup (no full entities loaded)
+		var textHashToGroupId = new Dictionary<string, Guid>();
+		foreach (var chunk in newDocTextHashes.Chunk(queryChunkSize))
+		{
+			var lookups = await documentRepository.GetGroupedByTextHashesAsync(chunk, ct);
+			foreach (var lookup in lookups)
+				textHashToGroupId.TryAdd(lookup.Hash, lookup.GroupId);
+		}
+
+		// Group new docs by text hash for batch processing
 		var newByTextHash = newDocs.GroupBy(d => d.TextHash).ToDictionary(g => g.Key, g => g.ToList());
+		var groupCache = new Dictionary<Guid, DocumentGroup>();
+		var pendingUpdateCount = 0;
 
 		foreach (var (textHash, docsWithHash) in newByTextHash)
 		{
-			if (!existingHashLookup.TryGetValue(textHash, out var existingDoc)) continue;
+			if (!textHashToGroupId.TryGetValue(textHash, out var groupId)) continue;
 
-			// Join the existing doc's group
-			var existingGroup = await groupRepository.GetByIdAsync(existingDoc.GroupMembership!.GroupId, ct);
-			if (existingGroup != null)
+			if (!groupCache.TryGetValue(groupId, out var existingGroup))
 			{
-				foreach (var newDoc in docsWithHash.Where(d => !grouped.Contains(d.Id)))
-				{
-					AddToGroup(existingGroup, newDoc, 1.0m);
-					grouped.Add(newDoc.Id);
-					joinedExisting++;
-				}
-				await groupRepository.UpdateAsync(existingGroup, ct);
+				existingGroup = await groupRepository.GetByIdAsync(groupId, ct);
+				if (existingGroup == null) continue;
+				groupCache[groupId] = existingGroup;
 			}
+
+			foreach (var newDoc in docsWithHash.Where(d => !grouped.Contains(d.Id)))
+			{
+				AddToGroup(existingGroup, newDoc.Id, 1.0m);
+				grouped.Add(newDoc.Id);
+				joinedExisting++;
+				pendingUpdateCount++;
+			}
+
+			if (pendingUpdateCount >= saveBatchSize)
+			{
+				await FlushPendingChangesAsync(ct);
+				groupCache.Clear();
+				pendingUpdateCount = 0;
+			}
+		}
+		if (pendingUpdateCount > 0)
+		{
+			await FlushPendingChangesAsync(ct);
+			groupCache.Clear();
+			pendingUpdateCount = 0;
 		}
 
 		metrics.Phase1Seconds = phaseSw.Elapsed.TotalSeconds;
 		metrics.Phase1Groups = newGroups.Count;
-		logger.LogInformation("Phase 1 (exact hash): {Joined} joined existing, {New} new groups in {Time:F2}s",
-			joinedExisting, newGroups.Count, metrics.Phase1Seconds);
+		logger.LogInformation("Phase 1 (exact hash): {Joined} joined existing in {Time:F2}s",
+			joinedExisting, metrics.Phase1Seconds);
 		progress?.Report(new GroupingProgress("Phase 1",
-			$"Done: {joinedExisting} joined existing groups, {newGroups.Count} new groups in {metrics.Phase1Seconds:F1}s", 25));
+			$"Done: {joinedExisting} joined existing groups in {metrics.Phase1Seconds:F1}s", 25));
 
-		// ── Phase 2: Fuzzy Hash ──
+		// ── Phase 2: Fuzzy Hash — same chunked pattern ──
 		phaseSw.Restart();
 		var remainingNewDocs = newDocs.Where(d => !grouped.Contains(d.Id)).ToList();
 		if (remainingNewDocs.Count == 0) goto PhaseComplete;
@@ -801,42 +839,60 @@ public class GroupingOrchestrator(
 			$"Matching fuzzy hashes for {remainingNewDocs.Count} remaining docs...", 30));
 
 		var newDocFuzzyHashes = remainingNewDocs.Select(d => d.FuzzyHash).Distinct().ToList();
-		var existingByFuzzyHash = await documentRepository.GetByFuzzyHashesAsync(newDocFuzzyHashes, ct);
-		var existingFuzzyLookup = existingByFuzzyHash
-			.Where(d => d.GroupMembership != null)
-			.GroupBy(d => d.FuzzyHash)
-			.ToDictionary(g => g.Key, g => g.First());
+
+		var fuzzyHashToGroupId = new Dictionary<string, Guid>();
+		foreach (var chunk in newDocFuzzyHashes.Chunk(queryChunkSize))
+		{
+			var lookups = await documentRepository.GetGroupedByFuzzyHashesAsync(chunk, ct);
+			foreach (var lookup in lookups)
+				fuzzyHashToGroupId.TryAdd(lookup.Hash, lookup.GroupId);
+		}
 
 		var newByFuzzyHash = remainingNewDocs.GroupBy(d => d.FuzzyHash).ToDictionary(g => g.Key, g => g.ToList());
-		var phase2NewGroups = 0;
 		var phase2Joined = 0;
 
 		foreach (var (fuzzyHash, docsWithHash) in newByFuzzyHash)
 		{
-			if (!existingFuzzyLookup.TryGetValue(fuzzyHash, out var existingDoc)) continue;
+			if (!fuzzyHashToGroupId.TryGetValue(fuzzyHash, out var groupId)) continue;
 
-			var existingGroup = await groupRepository.GetByIdAsync(existingDoc.GroupMembership!.GroupId, ct);
-			if (existingGroup != null)
+			if (!groupCache.TryGetValue(groupId, out var existingGroup))
 			{
-				foreach (var newDoc in docsWithHash.Where(d => !grouped.Contains(d.Id)))
-				{
-					AddToGroup(existingGroup, newDoc, 0.9m);
-					grouped.Add(newDoc.Id);
-					phase2Joined++;
-					joinedExisting++;
-				}
-				await groupRepository.UpdateAsync(existingGroup, ct);
+				existingGroup = await groupRepository.GetByIdAsync(groupId, ct);
+				if (existingGroup == null) continue;
+				groupCache[groupId] = existingGroup;
 			}
+
+			foreach (var newDoc in docsWithHash.Where(d => !grouped.Contains(d.Id)))
+			{
+				AddToGroup(existingGroup, newDoc.Id, 0.9m);
+				grouped.Add(newDoc.Id);
+				phase2Joined++;
+				joinedExisting++;
+				pendingUpdateCount++;
+			}
+
+			if (pendingUpdateCount >= saveBatchSize)
+			{
+				await FlushPendingChangesAsync(ct);
+				groupCache.Clear();
+				pendingUpdateCount = 0;
+			}
+		}
+		if (pendingUpdateCount > 0)
+		{
+			await FlushPendingChangesAsync(ct);
+			groupCache.Clear();
+			pendingUpdateCount = 0;
 		}
 
 		metrics.Phase2Seconds = phaseSw.Elapsed.TotalSeconds;
-		metrics.Phase2Groups = phase2NewGroups;
-		logger.LogInformation("Phase 2 (fuzzy hash): {Joined} joined existing, {New} new groups in {Time:F2}s",
-			phase2Joined, phase2NewGroups, metrics.Phase2Seconds);
+		metrics.Phase2Groups = 0;
+		logger.LogInformation("Phase 2 (fuzzy hash): {Joined} joined existing in {Time:F2}s",
+			phase2Joined, metrics.Phase2Seconds);
 		progress?.Report(new GroupingProgress("Phase 2",
-			$"Done: {phase2Joined} joined, {phase2NewGroups} new groups in {metrics.Phase2Seconds:F1}s", 45));
+			$"Done: {phase2Joined} joined existing in {metrics.Phase2Seconds:F1}s", 45));
 
-		// ── Phase 3: LSH + MinHash ──
+		// ── Phase 3: LSH + MinHash — projection-based, MinHash pre-filter ──
 		phaseSw.Restart();
 		remainingNewDocs = newDocs.Where(d => !grouped.Contains(d.Id)).ToList();
 		metrics.Phase3UngroupedCount = remainingNewDocs.Count;
@@ -846,14 +902,52 @@ public class GroupingOrchestrator(
 		progress?.Report(new GroupingProgress("Phase 3",
 			$"Loading persisted MinHash signatures for LSH comparison ({remainingNewDocs.Count} remaining docs)...", 48));
 
-		// Load existing MinHash signatures from DB
-		var existingSignatures = await dbContext.MinHashSignatures
-			.Include(s => s.Document)
-			.ThenInclude(d => d.GroupMembership)
-			.Where(s => s.Document.GroupMembership != null) // only docs that are in groups
-			.ToListAsync(ct);
+		// Load existing signatures as projection: (Signature, DocumentId) — no Document entity
+		const int sigChunkSize = 10_000;
+		var existingSigData = new List<int[]>();
+		var existingSigDocIds = new List<Guid>();
 
-		logger.LogInformation("Phase 3: Loaded {Count} existing MinHash signatures", existingSignatures.Count);
+		var totalSigCount = await dbContext.MinHashSignatures
+			.Where(s => s.Document.GroupMembership != null)
+			.CountAsync(ct);
+
+		var sigOffset = 0;
+		while (sigOffset < totalSigCount)
+		{
+			var chunk = await dbContext.MinHashSignatures
+				.AsNoTracking()
+				.Where(s => s.Document.GroupMembership != null)
+				.OrderBy(s => s.Id)
+				.Skip(sigOffset)
+				.Take(sigChunkSize)
+				.Select(s => new { s.Signature, s.DocumentId })
+				.ToListAsync(ct);
+
+			foreach (var item in chunk)
+			{
+				existingSigData.Add(item.Signature);
+				existingSigDocIds.Add(item.DocumentId);
+			}
+
+			sigOffset += chunk.Count;
+			if (chunk.Count < sigChunkSize) break;
+		}
+		dbContext.ChangeTracker.Clear();
+
+		logger.LogInformation("Phase 3: Loaded {Count} existing MinHash signatures as projections", existingSigData.Count);
+
+		// Batch-load DocumentId→GroupId mapping for all existing sig docs
+		var docIdToGroupId = new Dictionary<Guid, Guid>();
+		foreach (var chunk in existingSigDocIds.Distinct().Chunk(queryChunkSize))
+		{
+			var memberships = await dbContext.DocumentGroupMemberships
+				.AsNoTracking()
+				.Where(m => chunk.Contains(m.DocumentId))
+				.Select(m => new { m.DocumentId, m.GroupId })
+				.ToListAsync(ct);
+			foreach (var m in memberships)
+				docIdToGroupId.TryAdd(m.DocumentId, m.GroupId);
+		}
 
 		// Compute signatures for new remaining docs
 		progress?.Report(new GroupingProgress("Phase 3",
@@ -868,17 +962,18 @@ public class GroupingOrchestrator(
 		// Build LSH index from existing signatures only (new docs query against it)
 		progress?.Report(new GroupingProgress("Phase 3", "Building LSH index from existing signatures...", 55));
 		var lshIndex = new MinHashLshIndex(bands: 20, rowsPerBand: 5);
-		for (var i = 0; i < existingSignatures.Count; i++)
-			lshIndex.Add(i, existingSignatures[i].Signature);
+		for (var i = 0; i < existingSigData.Count; i++)
+			lshIndex.Add(i, existingSigData[i]);
 
 		// For each new doc, query candidates among existing docs
 		var phase3Joined = 0;
-		var phase3NewGroups = 0;
 		long candidateCount = 0;
 		long verifiedCount = 0;
+		long prefilterSkipped = 0;
+		const double minHashPrefilterThreshold = 0.60;
 
 		progress?.Report(new GroupingProgress("Phase 3",
-			$"Querying {remainingNewDocs.Count} new docs against {existingSignatures.Count} existing signatures...", 60));
+			$"Querying {remainingNewDocs.Count} new docs against {existingSigData.Count} existing signatures...", 60));
 
 		for (var i = 0; i < remainingNewDocs.Count; i++)
 		{
@@ -886,81 +981,121 @@ public class GroupingOrchestrator(
 			if (grouped.Contains(newDoc.Id)) continue;
 
 			var candidates = lshIndex.QueryCandidates(newSignatures[i]);
-			Interlocked.Add(ref candidateCount, candidates.Count);
+			candidateCount += candidates.Count;
 
-			Document? bestMatch = null;
+			Guid? bestGroupId = null;
 			decimal bestSimilarity = 0m;
 
 			foreach (var existIdx in candidates)
 			{
-				Interlocked.Increment(ref verifiedCount);
-				var existDoc = existingSignatures[existIdx].Document;
+				// MinHash pre-filter: estimate Jaccard before loading text
+				var estimatedJaccard = fingerprinter.EstimateJaccardFromMinHash(
+					newSignatures[i], existingSigData[existIdx]);
+
+				if (estimatedJaccard < minHashPrefilterThreshold)
+				{
+					prefilterSkipped++;
+					continue;
+				}
+
+				verifiedCount++;
+
+				// Load NormalizedText on-demand for the existing doc
+				var existDocId = existingSigDocIds[existIdx];
+				var existNormText = await dbContext.Documents
+					.AsNoTracking()
+					.Where(d => d.Id == existDocId)
+					.Select(d => d.NormalizedText)
+					.FirstOrDefaultAsync(ct);
+
+				if (existNormText == null) continue;
+
 				var sim = fingerprinter.CalculateSimilarityMetrics(
-					newDoc.NormalizedText, existDoc.NormalizedText);
+					newDoc.NormalizedText, existNormText);
 
 				if (sim.JaccardSimilarity >= 0.70 && (decimal)sim.JaccardSimilarity > bestSimilarity)
 				{
 					bestSimilarity = (decimal)sim.JaccardSimilarity;
-					bestMatch = existDoc;
+					if (docIdToGroupId.TryGetValue(existDocId, out var gId))
+						bestGroupId = gId;
 				}
 			}
 
-			if (bestMatch?.GroupMembership != null)
+			if (bestGroupId != null)
 			{
-				var existingGroup = await groupRepository.GetByIdAsync(bestMatch.GroupMembership.GroupId, ct);
+				if (!groupCache.TryGetValue(bestGroupId.Value, out var existingGroup))
+				{
+					existingGroup = await groupRepository.GetByIdAsync(bestGroupId.Value, ct);
+					if (existingGroup != null)
+						groupCache[bestGroupId.Value] = existingGroup;
+				}
+
 				if (existingGroup != null)
 				{
 					var confidence = bestSimilarity >= 0.85m ? MatchConfidence.High : MatchConfidence.Medium;
-					AddToGroup(existingGroup, newDoc, bestSimilarity);
+					AddToGroup(existingGroup, newDoc.Id, bestSimilarity);
 					if (existingGroup.Confidence < confidence)
 					{
 						existingGroup.Confidence = confidence;
 						existingGroup.MatchReason = $"Content similarity ({bestSimilarity:P1} Jaccard, incremental)";
 					}
-					await groupRepository.UpdateAsync(existingGroup, ct);
 					grouped.Add(newDoc.Id);
 					phase3Joined++;
 					joinedExisting++;
+					pendingUpdateCount++;
 				}
 			}
 
-			if ((i + 1) % 100 == 0)
+			if (pendingUpdateCount >= saveBatchSize)
+			{
+				await FlushPendingChangesAsync(ct);
+				groupCache.Clear();
+				pendingUpdateCount = 0;
+			}
+
+			if ((i + 1) % 500 == 0)
 			{
 				var pct = 60 + (int)(15.0 * (i + 1) / remainingNewDocs.Count);
 				progress?.Report(new GroupingProgress("Phase 3",
-					$"Processed {i + 1}/{remainingNewDocs.Count} docs ({phase3Joined} joined existing)...", pct));
+					$"Processed {i + 1}/{remainingNewDocs.Count} docs ({phase3Joined} joined, {prefilterSkipped:N0} pre-filtered)...", pct));
 			}
 		}
+		if (pendingUpdateCount > 0)
+		{
+			await FlushPendingChangesAsync(ct);
+			groupCache.Clear();
+			pendingUpdateCount = 0;
+		}
 
-		// Persist new MinHash signatures
+		// Persist new MinHash signatures with batched existence check
 		await PersistMinHashSignaturesAsync(remainingNewDocs, newSignatures, clearExisting: false, ct);
 
 		metrics.Phase3Seconds = phaseSw.Elapsed.TotalSeconds;
-		metrics.Phase3Groups = phase3NewGroups;
+		metrics.Phase3Groups = 0;
 		metrics.Phase3CandidatePairs = candidateCount;
 		metrics.Phase3VerifiedPairs = verifiedCount;
 		metrics.Phase3PairsCompared = verifiedCount;
-		logger.LogInformation("Phase 3 (LSH): {Joined} joined existing, {New} new groups, {Candidates:N0} candidates, {Verified:N0} verified in {Time:F2}s",
-			phase3Joined, phase3NewGroups, candidateCount, verifiedCount, metrics.Phase3Seconds);
+		logger.LogInformation(
+			"Phase 3 (LSH): {Joined} joined existing, {Candidates:N0} candidates, {Verified:N0} verified, {Skipped:N0} pre-filtered in {Time:F2}s",
+			phase3Joined, candidateCount, verifiedCount, prefilterSkipped, metrics.Phase3Seconds);
 		progress?.Report(new GroupingProgress("Phase 3",
-			$"Done: {phase3Joined} joined, {phase3NewGroups} new groups in {metrics.Phase3Seconds:F1}s", 78));
+			$"Done: {phase3Joined} joined, {verifiedCount:N0} verified, {prefilterSkipped:N0} pre-filtered in {metrics.Phase3Seconds:F1}s", 78));
 
 	PhaseComplete:
 
 		// ── Phase 4: Singletons for remaining new docs ──
 		phaseSw.Restart();
-		var singletonDocs = newDocs.Where(d => !grouped.Contains(d.Id)).ToList();
+		var singletonDocIds = newDocs.Where(d => !grouped.Contains(d.Id)).Select(d => d.Id).ToList();
 		progress?.Report(new GroupingProgress("Phase 4",
-			$"Creating singleton groups for {singletonDocs.Count} unmatched docs...", 80));
+			$"Creating singleton groups for {singletonDocIds.Count} unmatched docs...", 80));
 
 		var singletonCount = 0;
 		const int singletonBatchSize = 500;
 		var singletonBatch = new List<DocumentGroup>(singletonBatchSize);
-		foreach (var doc in singletonDocs)
+		foreach (var docId in singletonDocIds)
 		{
-			var group = CreateGroup(nextGroupNumber++, [doc],
-				MatchConfidence.None, "No matches found (unique document, incremental)",
-				doc, 0m);
+			var group = CreateGroupFromId(nextGroupNumber++, docId,
+				MatchConfidence.None, "No matches found (unique document, incremental)", 0m);
 			newGroups.Add(group);
 			singletonBatch.Add(group);
 			singletonCount++;
@@ -970,9 +1105,9 @@ public class GroupingOrchestrator(
 				await groupRepository.AddRangeAsync(singletonBatch, ct);
 				dbContext.ChangeTracker.Clear();
 				singletonBatch.Clear();
-				var pct = 80 + (int)(18.0 * singletonCount / singletonDocs.Count);
+				var pct = 80 + (int)(18.0 * singletonCount / singletonDocIds.Count);
 				progress?.Report(new GroupingProgress("Phase 4",
-					$"Creating singletons... {singletonCount}/{singletonDocs.Count}", pct));
+					$"Creating singletons... {singletonCount}/{singletonDocIds.Count}", pct));
 			}
 		}
 		if (singletonBatch.Count > 0)
@@ -1003,25 +1138,50 @@ public class GroupingOrchestrator(
 	private async Task PersistMinHashSignaturesAsync(
 		List<Document> docs, int[][] signatures, bool clearExisting, CancellationToken ct)
 	{
+		var docIds = docs.Select(d => d.Id).ToList();
+		await PersistMinHashSignaturesCoreAsync(docIds, signatures, clearExisting, ct);
+	}
+
+	private async Task PersistMinHashSignaturesAsync(
+		List<DocumentHashProjection> docs, int[][] signatures, bool clearExisting, CancellationToken ct)
+	{
+		var docIds = docs.Select(d => d.Id).ToList();
+		await PersistMinHashSignaturesCoreAsync(docIds, signatures, clearExisting, ct);
+	}
+
+	private async Task PersistMinHashSignaturesCoreAsync(
+		List<Guid> docIds, int[][] signatures, bool clearExisting, CancellationToken ct)
+	{
 		if (clearExisting)
 		{
 			await dbContext.MinHashSignatures.ExecuteDeleteAsync(ct);
 		}
 
-		var batch = new List<MinHashSignature>();
-		for (var i = 0; i < docs.Count; i++)
+		// Batch existence check: load all IDs that already have signatures
+		var existingDocIds = new HashSet<Guid>();
+		if (!clearExisting)
 		{
-			// Skip if signature already exists for this doc
-			if (!clearExisting)
+			const int existCheckChunk = 1000;
+			foreach (var chunk in docIds.Chunk(existCheckChunk))
 			{
-				var exists = await dbContext.MinHashSignatures
-					.AnyAsync(s => s.DocumentId == docs[i].Id, ct);
-				if (exists) continue;
+				var existing = await dbContext.MinHashSignatures
+					.AsNoTracking()
+					.Where(s => chunk.Contains(s.DocumentId))
+					.Select(s => s.DocumentId)
+					.ToListAsync(ct);
+				existingDocIds.UnionWith(existing);
 			}
+		}
+
+		var batch = new List<MinHashSignature>();
+		for (var i = 0; i < docIds.Count; i++)
+		{
+			if (!clearExisting && existingDocIds.Contains(docIds[i]))
+				continue;
 
 			batch.Add(new MinHashSignature
 			{
-				DocumentId = docs[i].Id,
+				DocumentId = docIds[i],
 				Signature = signatures[i]
 			});
 
@@ -1029,6 +1189,7 @@ public class GroupingOrchestrator(
 			{
 				dbContext.MinHashSignatures.AddRange(batch);
 				await dbContext.SaveChangesAsync(ct);
+				dbContext.ChangeTracker.Clear();
 				batch.Clear();
 			}
 		}
@@ -1037,6 +1198,7 @@ public class GroupingOrchestrator(
 		{
 			dbContext.MinHashSignatures.AddRange(batch);
 			await dbContext.SaveChangesAsync(ct);
+			dbContext.ChangeTracker.Clear();
 		}
 	}
 
@@ -1071,16 +1233,72 @@ public class GroupingOrchestrator(
 		return group;
 	}
 
-	private static void AddToGroup(DocumentGroup group, Document document, decimal similarityScore)
+	private void AddToGroup(DocumentGroup group, Document document, decimal similarityScore)
 	{
-		group.Memberships.Add(new DocumentGroupMembership
+		AddToGroup(group, document.Id, similarityScore);
+	}
+
+	private void AddToGroup(DocumentGroup group, Guid documentId, decimal similarityScore)
+	{
+		var membership = new DocumentGroupMembership
 		{
-			DocumentId = document.Id,
+			DocumentId = documentId,
 			GroupId = group.Id,
 			IsCanonical = false,
 			SimilarityScore = similarityScore
-		});
+		};
+		group.Memberships.Add(membership);
 		group.DocumentCount = group.Memberships.Count;
+		// Explicitly track the new entity — EF may not auto-detect it
+		// when the membership is added to a tracked collection by ID only.
+		dbContext.DocumentGroupMemberships.Add(membership);
+	}
+
+	private static DocumentGroup CreateGroupFromId(
+		int groupNumber,
+		Guid documentId,
+		MatchConfidence confidence,
+		string matchReason,
+		decimal similarityScore)
+	{
+		var group = new DocumentGroup
+		{
+			GroupNumber = groupNumber,
+			Confidence = confidence,
+			MatchReason = matchReason,
+			CanonicalDocumentId = documentId,
+			DocumentCount = 1
+		};
+
+		group.Memberships.Add(new DocumentGroupMembership
+		{
+			DocumentId = documentId,
+			GroupId = group.Id,
+			IsCanonical = true,
+			SimilarityScore = similarityScore == 0m ? 1.0m : similarityScore
+		});
+
+		return group;
+	}
+
+	/// <summary>
+	/// Fix phantom-Modified memberships, save changes, then clear the tracker.
+	/// Reused across all phases of incremental grouping.
+	/// </summary>
+	private async Task FlushPendingChangesAsync(CancellationToken ct)
+	{
+		// Fix phantom-Modified memberships (same fix as DocumentGroupRepository.UpdateAsync)
+		foreach (var entry in dbContext.ChangeTracker.Entries<DocumentGroupMembership>()
+			.Where(e => e.State == EntityState.Modified))
+		{
+			var hasRealChange = entry.Properties.Any(p => p.IsModified &&
+				!Equals(p.OriginalValue, p.CurrentValue));
+			if (!hasRealChange)
+				entry.State = EntityState.Unchanged;
+		}
+
+		await dbContext.SaveChangesAsync(ct);
+		dbContext.ChangeTracker.Clear();
 	}
 
 	private int SelectCanonical(List<Document> documents)
