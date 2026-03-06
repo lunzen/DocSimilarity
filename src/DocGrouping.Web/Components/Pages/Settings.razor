@@ -1,0 +1,282 @@
+@page "/settings"
+@rendermode InteractiveServer
+@inject IConfiguration Configuration
+@inject ILogger<Settings> Logger
+
+<PageTitle>Settings - Grouping Thresholds</PageTitle>
+
+<h4 class="mb-3"><i class="bi bi-sliders"></i> Grouping Thresholds</h4>
+
+<div class="alert alert-info">
+	<i class="bi bi-info-circle"></i>
+	These thresholds control how documents are assigned to confidence tiers during grouping.
+	Changes take effect on the <strong>next grouping run</strong>. Existing groups are not retroactively reclassified.
+</div>
+
+<div class="row g-4">
+	<div class="col-md-6">
+		<div class="card">
+			<div class="card-header"><strong>Similarity Thresholds</strong></div>
+			<div class="card-body">
+
+				<div class="mb-4">
+					<label class="form-label fw-bold">
+						Medium Minimum Jaccard
+						<span class="badge bg-warning text-dark ms-1">@(_mediumMin.ToString("P0"))</span>
+					</label>
+					<input type="range" class="form-range" min="0.30" max="0.95" step="0.05"
+						   @bind="_mediumMin" @bind:event="oninput" />
+					<div class="form-text">
+						Floor threshold. Documents with Jaccard similarity below this are singletons (None confidence).
+						Higher = stricter grouping; lower = more groups but more false positives.
+					</div>
+				</div>
+
+				<div class="mb-4">
+					<label class="form-label fw-bold">
+						High Minimum Jaccard
+						<span class="badge bg-primary ms-1">@(_highMin.ToString("P0"))</span>
+					</label>
+					<input type="range" class="form-range" min="0.50" max="0.99" step="0.05"
+						   @bind="_highMin" @bind:event="oninput" />
+					<div class="form-text">
+						Similarity at or above this is classified as High confidence.
+						Between Medium Min and this value = Medium confidence.
+					</div>
+				</div>
+
+				<div class="mb-4">
+					<label class="form-label fw-bold">
+						Fuzzy Hash Assumed Similarity
+						<span class="badge bg-info ms-1">@(_fuzzyAssumed.ToString("P0"))</span>
+					</label>
+					<input type="range" class="form-range" min="0.70" max="1.00" step="0.05"
+						   @bind="_fuzzyAssumed" @bind:event="oninput" />
+					<div class="form-text">
+						The similarity score recorded when two documents match by fuzzy hash (top-K token signature).
+						Fuzzy hash matches are always classified as High confidence regardless of this value.
+					</div>
+				</div>
+
+				<div class="mb-4">
+					<label class="form-label fw-bold">
+						MinHash Pre-filter Threshold
+						<span class="badge bg-secondary ms-1">@(_prefilter.ToString("P0"))</span>
+					</label>
+					<input type="range" class="form-range" min="0.20" max="0.80" step="0.05"
+						   @bind="_prefilter" @bind:event="oninput" />
+					<div class="form-text">
+						LSH candidate pairs with estimated Jaccard below this are skipped without full text comparison.
+						Should be below Medium Min to avoid missing edge-case matches. Lower = slower but more thorough.
+					</div>
+				</div>
+
+				@if (_validationError is not null)
+				{
+					<div class="alert alert-danger">@_validationError</div>
+				}
+
+				<div class="d-flex gap-2">
+					<button class="btn btn-primary" @onclick="SaveChanges" disabled="@_saving">
+						@if (_saving) { <span class="spinner-border spinner-border-sm me-1"></span> }
+						Save Changes
+					</button>
+					<button class="btn btn-outline-secondary" @onclick="ResetDefaults">Reset Defaults</button>
+				</div>
+
+				@if (_saved)
+				{
+					<div class="alert alert-success mt-3 mb-0">
+						<i class="bi bi-check-circle"></i> Thresholds saved. Changes will apply on the next grouping run.
+					</div>
+				}
+			</div>
+		</div>
+	</div>
+
+	<div class="col-md-6">
+		<div class="card">
+			<div class="card-header"><strong>Tier Preview</strong></div>
+			<div class="card-body">
+				<p class="text-muted mb-3">How documents will be classified with the current slider positions:</p>
+
+				<table class="table table-sm">
+					<thead>
+						<tr>
+							<th>Tier</th>
+							<th>Method</th>
+							<th>Jaccard Range</th>
+						</tr>
+					</thead>
+					<tbody>
+						<tr class="table-success">
+							<td><span class="badge bg-confidence-veryhigh">VeryHigh</span></td>
+							<td>Exact text hash</td>
+							<td>= 100%</td>
+						</tr>
+						<tr class="table-primary">
+							<td><span class="badge bg-confidence-high">High</span></td>
+							<td>Fuzzy hash match</td>
+							<td>Assumed @(_fuzzyAssumed.ToString("P0"))</td>
+						</tr>
+						<tr class="table-primary">
+							<td><span class="badge bg-confidence-high">High</span></td>
+							<td>Jaccard similarity</td>
+							<td>@(_highMin.ToString("P0")) &ndash; 100%</td>
+						</tr>
+						<tr class="table-warning">
+							<td><span class="badge bg-confidence-medium">Medium</span></td>
+							<td>Jaccard similarity</td>
+							<td>@(_mediumMin.ToString("P0")) &ndash; @(_highMin.ToString("P0"))</td>
+						</tr>
+						<tr class="table-secondary">
+							<td><span class="badge bg-confidence-none">None</span></td>
+							<td>No match</td>
+							<td>&lt; @(_mediumMin.ToString("P0"))</td>
+						</tr>
+					</tbody>
+				</table>
+
+				<hr />
+				<h6>Visual Scale</h6>
+				<div class="d-flex align-items-center" style="height: 40px;">
+					<div class="text-center text-white small"
+						 style="width: @(_mediumMin * 100)%; background: #6c757d; height: 100%; display: flex; align-items: center; justify-content: center; border-radius: 4px 0 0 4px;">
+						None
+					</div>
+					<div class="text-center text-dark small"
+						 style="width: @((_highMin - _mediumMin) * 100)%; background: #fd7e14; height: 100%; display: flex; align-items: center; justify-content: center;">
+						Medium
+					</div>
+					<div class="text-center text-white small"
+						 style="width: @((1.0 - _highMin) * 100)%; background: #0d6efd; height: 100%; display: flex; align-items: center; justify-content: center; border-radius: 0 4px 4px 0;">
+						High
+					</div>
+				</div>
+				<div class="d-flex justify-content-between text-muted small mt-1">
+					<span>0%</span>
+					<span>@(_mediumMin.ToString("P0"))</span>
+					<span>@(_highMin.ToString("P0"))</span>
+					<span>100%</span>
+				</div>
+			</div>
+		</div>
+	</div>
+</div>
+
+@code {
+	private double _mediumMin;
+	private double _highMin;
+	private double _fuzzyAssumed;
+	private double _prefilter;
+	private bool _saving;
+	private bool _saved;
+	private string? _validationError;
+
+	protected override void OnInitialized()
+	{
+		var section = Configuration.GetSection("GroupingThresholds");
+		_mediumMin = section.GetValue("MediumMinJaccard", 0.70);
+		_highMin = section.GetValue("HighMinJaccard", 0.85);
+		_fuzzyAssumed = section.GetValue("FuzzyHashAssumedSimilarity", 0.90);
+		_prefilter = section.GetValue("MinHashPrefilterThreshold", 0.50);
+	}
+
+	private async Task SaveChanges()
+	{
+		_saved = false;
+		_validationError = null;
+
+		// Validate
+		if (_mediumMin >= _highMin)
+		{
+			_validationError = "Medium Min must be less than High Min.";
+			return;
+		}
+		if (_prefilter >= _mediumMin)
+		{
+			_validationError = "Pre-filter threshold should be below Medium Min to avoid missing matches.";
+			return;
+		}
+
+		_saving = true;
+		try
+		{
+			var filePath = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "appsettings.json");
+			filePath = Path.GetFullPath(filePath);
+
+			if (!File.Exists(filePath))
+			{
+				// Fallback: find it relative to content root
+				filePath = Path.Combine(Directory.GetCurrentDirectory(), "appsettings.json");
+			}
+
+			var json = await File.ReadAllTextAsync(filePath);
+			using var doc = System.Text.Json.JsonDocument.Parse(json);
+			var root = new Dictionary<string, System.Text.Json.JsonElement>();
+			foreach (var prop in doc.RootElement.EnumerateObject())
+				root[prop.Name] = prop.Value;
+
+			// Build updated config
+			var thresholds = new Dictionary<string, object>
+			{
+				["MediumMinJaccard"] = Math.Round(_mediumMin, 2),
+				["HighMinJaccard"] = Math.Round(_highMin, 2),
+				["FuzzyHashAssumedSimilarity"] = Math.Round(_fuzzyAssumed, 2),
+				["MinHashPrefilterThreshold"] = Math.Round(_prefilter, 2)
+			};
+
+			// Rewrite the file preserving other sections
+			var options = new System.Text.Json.JsonSerializerOptions { WriteIndented = true };
+			using var stream = new MemoryStream();
+			using var writer = new System.Text.Json.Utf8JsonWriter(stream, new System.Text.Json.JsonWriterOptions { Indented = true });
+			writer.WriteStartObject();
+
+			foreach (var prop in doc.RootElement.EnumerateObject())
+			{
+				if (prop.Name == "GroupingThresholds")
+				{
+					writer.WritePropertyName("GroupingThresholds");
+					System.Text.Json.JsonSerializer.Serialize(writer, thresholds, options);
+				}
+				else
+				{
+					prop.WriteTo(writer);
+				}
+			}
+
+			writer.WriteEndObject();
+			writer.Flush();
+
+			var updatedJson = System.Text.Encoding.UTF8.GetString(stream.ToArray());
+			await File.WriteAllTextAsync(filePath, updatedJson);
+
+			// Reload configuration
+			if (Configuration is IConfigurationRoot configRoot)
+				configRoot.Reload();
+
+			_saved = true;
+			Logger.LogInformation("Grouping thresholds updated: MediumMin={MediumMin}, HighMin={HighMin}, Fuzzy={Fuzzy}, Prefilter={Prefilter}",
+				_mediumMin, _highMin, _fuzzyAssumed, _prefilter);
+		}
+		catch (Exception ex)
+		{
+			_validationError = $"Failed to save: {ex.Message}";
+			Logger.LogError(ex, "Failed to save grouping thresholds");
+		}
+		finally
+		{
+			_saving = false;
+		}
+	}
+
+	private void ResetDefaults()
+	{
+		_mediumMin = 0.70;
+		_highMin = 0.85;
+		_fuzzyAssumed = 0.90;
+		_prefilter = 0.50;
+		_saved = false;
+		_validationError = null;
+	}
+}

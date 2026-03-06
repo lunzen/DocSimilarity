@@ -10,8 +10,10 @@ using DocGrouping.Domain.Interfaces;
 using DocGrouping.Infrastructure.Persistence;
 using DocGrouping.Infrastructure.Rules;
 using DocGrouping.Infrastructure.TextProcessing;
+using DocGrouping.Infrastructure.Configuration;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace DocGrouping.Infrastructure.Services;
 
@@ -21,8 +23,11 @@ public class GroupingOrchestrator(
 	DocGroupingDbContext dbContext,
 	DocumentFingerprinter fingerprinter,
 	RulesEngine rulesEngine,
+	IOptions<GroupingThresholds> thresholdOptions,
 	ILogger<GroupingOrchestrator> logger) : IGroupingOrchestrator
 {
+	private GroupingThresholds Thresholds => thresholdOptions.Value;
+
 	public Task<List<DocumentGroup>> GroupAllDocumentsAsync(CancellationToken ct = default)
 		=> GroupAllDocumentsAsync(null!, ct);
 
@@ -153,7 +158,7 @@ public class GroupingOrchestrator(
 				MatchConfidence.High,
 				"Fuzzy content match (top-K tokens)",
 				ungrouped[0],
-				0.9m);
+				(decimal)Thresholds.FuzzyHashAssumedSimilarity);
 
 			groups.Add(group);
 			groupBatch.Add(group);
@@ -183,7 +188,7 @@ public class GroupingOrchestrator(
 		progress?.Report(new GroupingProgress("Phase 2",
 			$"Done: {phase2Count} groups in {metrics.Phase2Seconds:F1}s — {grouped.Count}/{documents.Count} docs grouped so far", 45));
 
-		// ── Phase 3: Similarity grouping (MEDIUM confidence, 70-85% Jaccard) ──
+		// ── Phase 3: Similarity grouping (MEDIUM confidence, configurable Jaccard range) ──
 		// Uses MinHash + LSH for candidate generation when ≥200 docs, brute-force otherwise.
 		phaseSw.Restart();
 		var ungroupedDocs = documents.Where(d => !grouped.Contains(d.Id)).ToList();
@@ -216,7 +221,7 @@ public class GroupingOrchestrator(
 						ungroupedDocs[i].NormalizedText,
 						ungroupedDocs[j].NormalizedText);
 
-					if (simMetrics.JaccardSimilarity >= 0.70 && simMetrics.JaccardSimilarity <= 0.85)
+					if (simMetrics.JaccardSimilarity >= Thresholds.MediumMinJaccard && simMetrics.JaccardSimilarity < Thresholds.HighMinJaccard)
 						verifiedPairs.Add((i, j));
 				}
 			});
@@ -275,7 +280,7 @@ public class GroupingOrchestrator(
 					ungroupedDocs[pair.Item1].NormalizedText,
 					ungroupedDocs[pair.Item2].NormalizedText);
 
-				if (simMetrics.JaccardSimilarity >= 0.70 && simMetrics.JaccardSimilarity <= 0.85)
+				if (simMetrics.JaccardSimilarity >= Thresholds.MediumMinJaccard && simMetrics.JaccardSimilarity < Thresholds.HighMinJaccard)
 					verifiedPairs.Add((pair.Item1, pair.Item2));
 			});
 		}
@@ -333,7 +338,7 @@ public class GroupingOrchestrator(
 				nextGroupNumber++,
 				docsInGroup,
 				MatchConfidence.Medium,
-				"Moderate content similarity (70-85% Jaccard)",
+				$"Moderate content similarity ({Thresholds.MediumMinJaccard:P0}-{Thresholds.HighMinJaccard:P0} Jaccard)",
 				docsInGroup[0],
 				0.75m);
 
@@ -459,7 +464,7 @@ public class GroupingOrchestrator(
 			{
 				existingGroup.Confidence = MatchConfidence.High;
 				existingGroup.MatchReason = "Fuzzy content match (top-K tokens)";
-				AddToGroup(existingGroup, document, 0.9m);
+				AddToGroup(existingGroup, document, (decimal)Thresholds.FuzzyHashAssumedSimilarity);
 				await groupRepository.UpdateAsync(existingGroup, ct);
 				return existingGroup;
 			}
@@ -472,14 +477,14 @@ public class GroupingOrchestrator(
 			var metrics = fingerprinter.CalculateSimilarityMetrics(
 				document.NormalizedText, candidate.NormalizedText);
 
-			if (metrics.JaccardSimilarity >= 0.70 && metrics.JaccardSimilarity <= 0.85
+			if (metrics.JaccardSimilarity >= Thresholds.MediumMinJaccard && metrics.JaccardSimilarity < Thresholds.HighMinJaccard
 				&& candidate.GroupMembership != null)
 			{
 				var existingGroup = await groupRepository.GetByIdAsync(candidate.GroupMembership.GroupId, ct);
 				if (existingGroup != null)
 				{
 					existingGroup.Confidence = MatchConfidence.Medium;
-					existingGroup.MatchReason = "Moderate content similarity (70-85% Jaccard)";
+					existingGroup.MatchReason = $"Moderate content similarity ({Thresholds.MediumMinJaccard:P0}-{Thresholds.HighMinJaccard:P0} Jaccard)";
 					AddToGroup(existingGroup, document, (decimal)metrics.JaccardSimilarity);
 					await groupRepository.UpdateAsync(existingGroup, ct);
 					return existingGroup;
@@ -656,10 +661,10 @@ public class GroupingOrchestrator(
 		var fuzzyHashMatch = candidates.FirstOrDefault(c => c.FuzzyHash == doc.FuzzyHash);
 		if (fuzzyHashMatch != null)
 		{
-			return (fuzzyHashMatch, MatchConfidence.High, 0.9m, "Fuzzy hash match with canonical");
+			return (fuzzyHashMatch, MatchConfidence.High, (decimal)Thresholds.FuzzyHashAssumedSimilarity, "Fuzzy hash match with canonical");
 		}
 
-		// Phase 3: Best Jaccard >= 0.70 (no upper bound, unlike batch mode)
+		// Phase 3: Best Jaccard >= MediumMinJaccard (no upper bound, unlike batch mode)
 		Document? bestCandidate = null;
 		decimal bestSimilarity = 0m;
 
@@ -668,7 +673,7 @@ public class GroupingOrchestrator(
 			var metrics = fingerprinter.CalculateSimilarityMetrics(
 				doc.NormalizedText, candidate.NormalizedText);
 
-			if (metrics.JaccardSimilarity >= 0.70 && (decimal)metrics.JaccardSimilarity > bestSimilarity)
+			if (metrics.JaccardSimilarity >= Thresholds.MediumMinJaccard && (decimal)metrics.JaccardSimilarity > bestSimilarity)
 			{
 				bestSimilarity = (decimal)metrics.JaccardSimilarity;
 				bestCandidate = candidate;
@@ -677,7 +682,7 @@ public class GroupingOrchestrator(
 
 		if (bestCandidate != null)
 		{
-			var confidence = bestSimilarity >= 0.85m ? MatchConfidence.High : MatchConfidence.Medium;
+			var confidence = bestSimilarity >= (decimal)Thresholds.HighMinJaccard ? MatchConfidence.High : MatchConfidence.Medium;
 			return (bestCandidate, confidence, bestSimilarity,
 				$"Jaccard similarity {bestSimilarity:P1} with canonical");
 		}
@@ -864,7 +869,7 @@ public class GroupingOrchestrator(
 
 			foreach (var newDoc in docsWithHash.Where(d => !grouped.Contains(d.Id)))
 			{
-				AddToGroup(existingGroup, newDoc.Id, 0.9m);
+				AddToGroup(existingGroup, newDoc.Id, (decimal)Thresholds.FuzzyHashAssumedSimilarity);
 				grouped.Add(newDoc.Id);
 				phase2Joined++;
 				joinedExisting++;
@@ -970,7 +975,7 @@ public class GroupingOrchestrator(
 		long candidateCount = 0;
 		long verifiedCount = 0;
 		long prefilterSkipped = 0;
-		const double minHashPrefilterThreshold = 0.60;
+		var minHashPrefilterThreshold = Thresholds.MinHashPrefilterThreshold;
 
 		progress?.Report(new GroupingProgress("Phase 3",
 			$"Querying {remainingNewDocs.Count} new docs against {existingSigData.Count} existing signatures...", 60));
@@ -1013,7 +1018,7 @@ public class GroupingOrchestrator(
 				var sim = fingerprinter.CalculateSimilarityMetrics(
 					newDoc.NormalizedText, existNormText);
 
-				if (sim.JaccardSimilarity >= 0.70 && (decimal)sim.JaccardSimilarity > bestSimilarity)
+				if (sim.JaccardSimilarity >= Thresholds.MediumMinJaccard && (decimal)sim.JaccardSimilarity > bestSimilarity)
 				{
 					bestSimilarity = (decimal)sim.JaccardSimilarity;
 					if (docIdToGroupId.TryGetValue(existDocId, out var gId))
@@ -1032,7 +1037,7 @@ public class GroupingOrchestrator(
 
 				if (existingGroup != null)
 				{
-					var confidence = bestSimilarity >= 0.85m ? MatchConfidence.High : MatchConfidence.Medium;
+					var confidence = bestSimilarity >= (decimal)Thresholds.HighMinJaccard ? MatchConfidence.High : MatchConfidence.Medium;
 					AddToGroup(existingGroup, newDoc.Id, bestSimilarity);
 					if (existingGroup.Confidence < confidence)
 					{

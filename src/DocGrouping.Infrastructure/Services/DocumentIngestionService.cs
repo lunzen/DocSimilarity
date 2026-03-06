@@ -4,6 +4,7 @@ using DocGrouping.Domain.Entities;
 using DocGrouping.Domain.Interfaces;
 using DocGrouping.Infrastructure.Persistence;
 using DocGrouping.Infrastructure.TextProcessing;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
 
 namespace DocGrouping.Infrastructure.Services;
@@ -14,8 +15,15 @@ public class DocumentIngestionService(
 	TextNormalizer normalizer,
 	DocumentFingerprinter fingerprinter,
 	PdfTextExtractor pdfExtractor,
+	IPdfStorageService pdfStorage,
+	IHttpContextAccessor httpContextAccessor,
 	ILogger<DocumentIngestionService> logger) : IDocumentIngestionService
 {
+	private string GetActiveDatabase()
+	{
+		return httpContextAccessor.HttpContext?.Items["ActiveDatabase"] as string ?? "docgrouping";
+	}
+
 	public async Task<Document> IngestFileAsync(string filePath, CancellationToken ct = default)
 	{
 		var fileName = Path.GetFileName(filePath);
@@ -36,6 +44,8 @@ public class DocumentIngestionService(
 			originalText = System.Text.Encoding.UTF8.GetString(fileBytes);
 		}
 
+		// PostgreSQL rejects null bytes in text columns
+		originalText = originalText.Replace("\0", "");
 		var normalizedText = normalizer.Normalize(originalText);
 		var (textHash, fuzzyHash) = fingerprinter.GenerateAllFingerprints(normalizedText);
 		var tokens = normalizer.GetTokens(normalizedText);
@@ -56,14 +66,61 @@ public class DocumentIngestionService(
 
 		await documentRepository.AddAsync(document, ct);
 
+		if (extension == ".pdf")
+			await pdfStorage.SaveAsync(document.Id, GetActiveDatabase(), fileBytes);
+
 		logger.LogInformation("Ingested document {FileName}: {WordCount} words, text_hash={TextHash}",
 			fileName, tokens.Count, textHash[..16]);
 
 		return document;
 	}
 
+	public async Task<Document> IngestBytesAsync(string fileName, byte[] fileBytes, CancellationToken ct = default)
+	{
+		var extension = Path.GetExtension(fileName).ToLowerInvariant();
+		var fileHash = fingerprinter.GenerateFileHash(fileBytes);
+
+		string originalText;
+		if (extension == ".pdf")
+		{
+			originalText = pdfExtractor.ExtractText(fileBytes);
+		}
+		else
+		{
+			originalText = System.Text.Encoding.UTF8.GetString(fileBytes);
+		}
+
+		// PostgreSQL rejects null bytes in text columns
+		originalText = originalText.Replace("\0", "");
+		var normalizedText = normalizer.Normalize(originalText);
+		var (textHash, fuzzyHash) = fingerprinter.GenerateAllFingerprints(normalizedText);
+		var tokens = normalizer.GetTokens(normalizedText);
+
+		var document = new Document
+		{
+			FileName = fileName,
+			FilePath = string.Empty,
+			FileSizeBytes = fileBytes.Length,
+			FileHash = fileHash,
+			OriginalText = originalText,
+			NormalizedText = normalizedText,
+			TextHash = textHash,
+			FuzzyHash = fuzzyHash,
+			WordCount = tokens.Count
+		};
+
+		await documentRepository.AddAsync(document, ct);
+
+		if (extension == ".pdf")
+			await pdfStorage.SaveAsync(document.Id, GetActiveDatabase(), fileBytes);
+
+		return document;
+	}
+
 	public async Task<Document> IngestTextAsync(string fileName, string text, string? documentType = null, CancellationToken ct = default)
 	{
+		// PostgreSQL rejects null bytes in text columns
+		text = text.Replace("\0", "");
 		var normalizedText = normalizer.Normalize(text);
 		var (textHash, fuzzyHash) = fingerprinter.GenerateAllFingerprints(normalizedText);
 		var tokens = normalizer.GetTokens(normalizedText);

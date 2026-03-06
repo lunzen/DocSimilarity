@@ -62,7 +62,22 @@ public class TextNormalizer
 
 	private static string NormalizeUnicode(string text)
 	{
-		return text.Normalize(NormalizationForm.FormKC);
+		// Use Rune API to rebuild string with only valid Unicode scalar values
+		var cleaned = new System.Text.StringBuilder(text.Length);
+		foreach (var rune in text.EnumerateRunes())
+		{
+			if (rune.Value != 0xFFFD) // skip replacement characters
+				cleaned.Append(rune);
+		}
+
+		try
+		{
+			return cleaned.ToString().Normalize(NormalizationForm.FormKC);
+		}
+		catch (ArgumentException)
+		{
+			return cleaned.ToString();
+		}
 	}
 
 	private static string CorrectOcrErrors(string text)

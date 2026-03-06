@@ -6,26 +6,37 @@
 		<div class="border rounded p-2 diff-pane" @ref="_pane1">
 			@foreach (var line in DiffLines)
 			{
-				var css = line.Type switch
+				@if (line.Type == DiffType.Added)
 				{
-					DiffType.Removed => "diff-removed",
-					DiffType.Same => "",
-					_ => "d-none"
-				};
-				var addedPlaceholder = line.Type == DiffType.Added ? "diff-added" : "";
-				@if (line.Type != DiffType.Added)
+					<div class="diff-added">&nbsp;</div>
+				}
+				else
 				{
+					var css = line.Type == DiffType.Removed ? "diff-removed" : "";
 					<div class="@css">
 						@if (ShowLineNumbers)
 						{
 							<span class="diff-line-number">@(line.Line1?.ToString() ?? "")</span>
 						}
-						@line.Content
+						@if (line.InlineSpans is not null && line.Type == DiffType.Removed)
+						{
+							@foreach (var span in line.InlineSpans)
+							{
+								@if (span.IsChanged)
+								{
+									<span class="diff-word-removed">@span.Text</span>
+								}
+								else
+								{
+									@span.Text
+								}
+							}
+						}
+						else
+						{
+							@line.Content
+						}
 					</div>
-				}
-				else
-				{
-					<div class="@addedPlaceholder">&nbsp;</div>
 				}
 			}
 		</div>
@@ -34,26 +45,37 @@
 		<div class="border rounded p-2 diff-pane" @ref="_pane2">
 			@foreach (var line in DiffLines)
 			{
-				var css = line.Type switch
+				@if (line.Type == DiffType.Removed)
 				{
-					DiffType.Added => "diff-added",
-					DiffType.Same => "",
-					_ => "d-none"
-				};
-				var removedPlaceholder = line.Type == DiffType.Removed ? "diff-removed" : "";
-				@if (line.Type != DiffType.Removed)
+					<div class="diff-removed">&nbsp;</div>
+				}
+				else
 				{
+					var css = line.Type == DiffType.Added ? "diff-added" : "";
 					<div class="@css">
 						@if (ShowLineNumbers)
 						{
 							<span class="diff-line-number">@(line.Line2?.ToString() ?? "")</span>
 						}
-						@line.Content
+						@if (line.InlineSpans is not null && line.Type == DiffType.Added)
+						{
+							@foreach (var span in line.InlineSpans)
+							{
+								@if (span.IsChanged)
+								{
+									<span class="diff-word-added">@span.Text</span>
+								}
+								else
+								{
+									@span.Text
+								}
+							}
+						}
+						else
+						{
+							@line.Content
+						}
 					</div>
-				}
-				else
-				{
-					<div class="@removedPlaceholder">&nbsp;</div>
 				}
 			}
 		</div>
@@ -79,6 +101,7 @@
 
 	async ValueTask IAsyncDisposable.DisposeAsync()
 	{
-		if (_jsModule is not null) await _jsModule.DisposeAsync();
+		try { if (_jsModule is not null) await _jsModule.DisposeAsync(); }
+		catch (JSDisconnectedException) { }
 	}
 }

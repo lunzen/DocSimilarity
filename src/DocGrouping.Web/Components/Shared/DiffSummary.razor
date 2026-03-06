@@ -1,23 +1,32 @@
 @{
-	var totalLines = DiffLines.Count;
-	var added = DiffLines.Count(l => l.Type == DiffType.Added);
-	var removed = DiffLines.Count(l => l.Type == DiffType.Removed);
-	var same = DiffLines.Count(l => l.Type == DiffType.Same);
-	var pctMatch = totalLines > 0 ? (double)same / (same + Math.Max(added, removed)) * 100 : 100;
+	var segAdded = DiffLines.Count(l => l.Type == DiffType.Added);
+	var segRemoved = DiffLines.Count(l => l.Type == DiffType.Removed);
+	var segSame = DiffLines.Count(l => l.Type == DiffType.Same);
 }
 
 <div class="card">
 	<div class="card-body">
-		<h6>Diff Summary</h6>
+		<h6>Word-Level Summary</h6>
+		@if (WordStats is not null)
+		{
+			<ul class="list-unstyled mb-3">
+				<li><i class="bi bi-file-text me-2"></i> <strong>Doc 1 words:</strong> @WordStats.TotalWords1</li>
+				<li><i class="bi bi-file-text me-2"></i> <strong>Doc 2 words:</strong> @WordStats.TotalWords2</li>
+				<li><i class="bi bi-check-circle me-2"></i> <strong>Common words:</strong> @WordStats.CommonWords</li>
+				<li class="text-success"><i class="bi bi-plus-circle me-2"></i> <strong>Added:</strong> @WordStats.AddedWords words</li>
+				<li class="text-danger"><i class="bi bi-dash-circle me-2"></i> <strong>Removed:</strong> @WordStats.RemovedWords words</li>
+				<li><i class="bi bi-percent me-2"></i> <strong>Word match:</strong> @WordStats.SimilarityPct.ToString("F1")%</li>
+			</ul>
+		}
+
+		<h6 class="mt-3">Segment Diff</h6>
 		<ul class="list-unstyled mb-3">
-			<li><i class="bi bi-file-text me-2"></i> <strong>Total lines:</strong> @totalLines</li>
-			<li class="text-success"><i class="bi bi-plus-circle me-2"></i> <strong>Added:</strong> @added lines</li>
-			<li class="text-danger"><i class="bi bi-dash-circle me-2"></i> <strong>Removed:</strong> @removed lines</li>
-			<li><i class="bi bi-check-circle me-2"></i> <strong>Unchanged:</strong> @same lines</li>
-			<li><i class="bi bi-percent me-2"></i> <strong>Match:</strong> @pctMatch.ToString("F1")%</li>
+			<li class="text-success"><i class="bi bi-plus-circle me-2"></i> <strong>Added:</strong> @segAdded segments</li>
+			<li class="text-danger"><i class="bi bi-dash-circle me-2"></i> <strong>Removed:</strong> @segRemoved segments</li>
+			<li><i class="bi bi-check-circle me-2"></i> <strong>Unchanged:</strong> @segSame segments</li>
 		</ul>
 
-		@if (added > 0 || removed > 0)
+		@if (segAdded > 0 || segRemoved > 0)
 		{
 			<h6 class="mt-3">Key Differences</h6>
 			<div class="small" style="max-height: 300px; overflow-y: auto;">
@@ -30,7 +39,7 @@
 						<span class="badge @(hunk.Type == DiffType.Added ? "bg-success" : "bg-danger") me-1">
 							@(hunk.Type == DiffType.Added ? "+" : "-")
 						</span>
-						<span class="text-muted">Line @hunk.LineNumber:</span>
+						<span class="text-muted">Segment @hunk.LineNumber:</span>
 						<span>@Truncate(hunk.Content, 120)</span>
 					</div>
 				}
@@ -51,6 +60,7 @@
 
 @code {
 	[Parameter] public List<DiffLine> DiffLines { get; set; } = [];
+	[Parameter] public WordDiffStats? WordStats { get; set; }
 
 	private record HunkInfo(DiffType Type, int LineNumber, string Content);
 

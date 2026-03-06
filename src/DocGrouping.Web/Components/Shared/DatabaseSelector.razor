@@ -1,3 +1,4 @@
+@rendermode InteractiveServer
 @using DocGrouping.Web.Services
 @inject DatabaseSelectorState DbState
 @inject DatabaseInitializer DbInit
@@ -6,7 +7,7 @@
 <div class="d-flex align-items-center gap-2">
     <label class="text-muted small mb-0" for="db-selector">Database:</label>
     <select id="db-selector" class="form-select form-select-sm" style="width: auto;"
-            value="@DbState.ActiveDatabaseName" @onchange="OnDatabaseChanged">
+            @bind="selectedDb" @bind:after="OnDatabaseChanged">
         @foreach (var db in DbState.AvailableDatabases)
         {
             <option value="@db">@db</option>
@@ -15,14 +16,20 @@
 </div>
 
 @code {
-    private async Task OnDatabaseChanged(ChangeEventArgs e)
+    private string selectedDb = "";
+
+    protected override void OnInitialized()
     {
-        var newDb = e.Value?.ToString();
-        if (string.IsNullOrEmpty(newDb) || newDb == DbState.ActiveDatabaseName)
+        selectedDb = DbState.ActiveDatabaseName;
+    }
+
+    private async Task OnDatabaseChanged()
+    {
+        if (string.IsNullOrEmpty(selectedDb) || selectedDb == DbState.ActiveDatabaseName)
             return;
 
-        await DbInit.EnsureCreatedAsync(newDb);
-        DbState.ActiveDatabaseName = newDb;
+        await DbInit.EnsureCreatedAsync(selectedDb);
+        DbState.ActiveDatabaseName = selectedDb;
         Nav.NavigateTo(Nav.Uri, forceLoad: true);
     }
 }

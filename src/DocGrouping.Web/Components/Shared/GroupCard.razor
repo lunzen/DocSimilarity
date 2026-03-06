@@ -32,7 +32,9 @@
 						<th>File</th>
 						<th>Words</th>
 						<th>Role</th>
+						<th>Expected</th>
 						<th>Preview</th>
+						<th></th>
 					</tr>
 				</thead>
 				<tbody>
@@ -47,10 +49,34 @@
 									<span class="badge bg-success">Canonical</span>
 								}
 							</td>
+							<td>
+								@{ var expected = GetExpectedSimilarity(doc); }
+								@if (expected is not null)
+								{
+									<span class="badge @GetExpectedBadgeClass(expected)">@FormatSimilarity(expected)</span>
+								}
+							</td>
 							<td class="small text-muted text-truncate" style="max-width: 300px;">
 								@(doc.PreviewText.Length > 200 ? doc.PreviewText[..200] + "..." : doc.PreviewText)
 							</td>
+							<td>
+								@if (doc.HasPdf)
+								{
+									<button class="btn btn-sm btn-outline-secondary" @onclick="() => TogglePdfViewer(doc.Id)" @onclick:stopPropagation="true">
+										<i class="bi bi-file-earmark-pdf"></i> @(_viewingPdfId == doc.Id ? "Hide PDF" : "View PDF")
+									</button>
+								}
+							</td>
 						</tr>
+						@if (_viewingPdfId == doc.Id)
+						{
+							<tr>
+								<td colspan="6" class="p-0">
+									<iframe src="/api/documents/@doc.Id/pdf?db=@DatabaseName"
+											style="width:100%; height:600px; border:none;"></iframe>
+								</td>
+							</tr>
+						}
 					}
 				</tbody>
 			</table>
@@ -65,10 +91,17 @@
 
 @code {
 	[Parameter] public GroupDto Group { get; set; } = null!;
+	[Parameter] public string DatabaseName { get; set; } = "";
 
 	private bool IsExpanded { get; set; }
+	private Guid? _viewingPdfId;
 
 	private void ToggleExpand() => IsExpanded = !IsExpanded;
+
+	private void TogglePdfViewer(Guid docId)
+	{
+		_viewingPdfId = _viewingPdfId == docId ? null : docId;
+	}
 
 	private void NavigateToCompare() => Nav.NavigateTo($"/comparison/{Group.GroupNumber}");
 
@@ -78,5 +111,30 @@
 		"high" => "border-confidence-high",
 		"medium" => "border-confidence-medium",
 		_ => "border-confidence-none"
+	};
+
+	private static string? GetExpectedSimilarity(DocumentDto doc)
+	{
+		if (doc.Metadata.TryGetValue("expected_similarity", out var val) && val is string s)
+			return s;
+		return null;
+	}
+
+	private static string GetExpectedBadgeClass(string similarity) => similarity switch
+	{
+		"very_high" => "bg-danger",
+		"high" => "bg-warning text-dark",
+		"medium" => "bg-primary",
+		"unique" => "bg-secondary",
+		_ => "bg-light text-dark"
+	};
+
+	private static string FormatSimilarity(string similarity) => similarity switch
+	{
+		"very_high" => "VeryHigh",
+		"high" => "High",
+		"medium" => "Medium",
+		"unique" => "Unique",
+		_ => similarity
 	};
 }

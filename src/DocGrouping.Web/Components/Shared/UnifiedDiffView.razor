@@ -16,7 +16,26 @@
 		<div class="@css">
 			<span class="diff-line-number">@(line.Line1?.ToString() ?? "  ")</span>
 			<span class="diff-line-number">@(line.Line2?.ToString() ?? "  ")</span>
-			<span class="text-muted me-1">@prefix</span>@line.Content
+			<span class="text-muted me-1">@prefix</span>
+			@if (line.InlineSpans is not null)
+			{
+				var highlightClass = line.Type == DiffType.Removed ? "diff-word-removed" : "diff-word-added";
+				@foreach (var span in line.InlineSpans)
+				{
+					@if (span.IsChanged)
+					{
+						<span class="@highlightClass">@span.Text</span>
+					}
+					else
+					{
+						@span.Text
+					}
+				}
+			}
+			else
+			{
+				@line.Content
+			}
 		</div>
 	}
 </div>

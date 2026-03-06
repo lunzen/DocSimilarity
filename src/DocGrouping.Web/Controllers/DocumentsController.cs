@@ -1,3 +1,5 @@
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using DocGrouping.Application.Interfaces;
 using DocGrouping.Domain.Entities;
 using DocGrouping.Domain.Interfaces;
@@ -13,6 +15,7 @@ public class DocumentsController(
 	IDocumentRepository documentRepository,
 	IGroupingOrchestrator groupingOrchestrator,
 	IDocumentGeneratorService generatorService,
+	IPdfStorageService pdfStorage,
 	DocGroupingDbContext dbContext) : ControllerBase
 {
 	[HttpPost("upload")]
@@ -157,6 +160,18 @@ public class DocumentsController(
 		});
 	}
 
+	[HttpGet("{id:guid}/pdf")]
+	public IActionResult GetPdf(Guid id)
+	{
+		var dbName = HttpContext.Items["ActiveDatabase"] as string ?? "docgrouping";
+		if (!pdfStorage.Exists(id, dbName))
+			return NotFound();
+
+		var filePath = pdfStorage.GetFilePath(id, dbName);
+		var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+		return File(stream, "application/pdf");
+	}
+
 	[HttpGet("{id:guid}")]
 	public async Task<IActionResult> GetById(Guid id, CancellationToken ct)
 	{
@@ -243,6 +258,69 @@ public class DocumentsController(
 		});
 	}
 
+	[HttpPost("import-duplicate-sets")]
+	public async Task<IActionResult> ImportDuplicateSets([FromBody] ImportDuplicateSetsRequest request, CancellationToken ct)
+	{
+		var sourceDir = request.SourceDirectory ?? @"C:\Temp\idp-demo-docgen\output";
+
+		if (!Directory.Exists(sourceDir))
+			return NotFound(new { error = $"Directory not found: {sourceDir}" });
+
+		var manifestFiles = Directory.GetFiles(sourceDir, "*_manifest.json");
+		if (manifestFiles.Length == 0)
+			return BadRequest(new { error = "No manifest files found in directory" });
+
+		var jsonOptions = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+		var importedDocs = new List<object>();
+		var setsImported = 0;
+
+		foreach (var manifestPath in manifestFiles)
+		{
+			var json = await System.IO.File.ReadAllTextAsync(manifestPath, ct);
+			var manifest = JsonSerializer.Deserialize<DuplicateSetManifest>(json, jsonOptions);
+			if (manifest == null) continue;
+
+			foreach (var member in manifest.Members)
+			{
+				var pdfPath = Path.Combine(sourceDir, member.PdfFile);
+				if (!System.IO.File.Exists(pdfPath)) continue;
+
+				var doc = await ingestionService.IngestFileAsync(pdfPath, ct);
+
+				doc.DocumentType = manifest.DocType;
+				doc.CustomMetadata = JsonDocument.Parse(JsonSerializer.Serialize(new
+				{
+					duplicate_set_id = manifest.SetId,
+					expected_similarity = member.Similarity,
+					company_name = manifest.Company?.Name,
+					company_id = manifest.Company?.Id,
+					scan_profile = member.ScanProfile,
+					description = member.Description
+				}));
+
+				await documentRepository.UpdateAsync(doc, ct);
+
+				importedDocs.Add(new
+				{
+					doc.Id,
+					doc.FileName,
+					doc.DocumentType,
+					duplicate_set_id = manifest.SetId,
+					expected_similarity = member.Similarity
+				});
+			}
+
+			setsImported++;
+		}
+
+		return Ok(new
+		{
+			sets_imported = setsImported,
+			documents_imported = importedDocs.Count,
+			documents = importedDocs
+		});
+	}
+
 	[HttpPost("process-incremental")]
 	public async Task<IActionResult> ProcessIncremental(CancellationToken ct)
 	{
@@ -288,4 +366,49 @@ public class SetCanonicalRequest
 public class ClassifyRequest
 {
 	public List<Guid>? DocumentIds { get; set; }
+}
+
+public class ImportDuplicateSetsRequest
+{
+	[JsonPropertyName("source_directory")]
+	public string? SourceDirectory { get; set; }
+}
+
+public class DuplicateSetManifest
+{
+	[JsonPropertyName("set_id")]
+	public string SetId { get; set; } = "";
+
+	[JsonPropertyName("doc_type")]
+	public string DocType { get; set; } = "";
+
+	[JsonPropertyName("company")]
+	public ManifestCompany? Company { get; set; }
+
+	[JsonPropertyName("members")]
+	public List<ManifestMember> Members { get; set; } = [];
+}
+
+public class ManifestCompany
+{
+	[JsonPropertyName("id")]
+	public string Id { get; set; } = "";
+
+	[JsonPropertyName("name")]
+	public string Name { get; set; } = "";
+}
+
+public class ManifestMember
+{
+	[JsonPropertyName("similarity")]
+	public string Similarity { get; set; } = "";
+
+	[JsonPropertyName("pdf_file")]
+	public string PdfFile { get; set; } = "";
+
+	[JsonPropertyName("description")]
+	public string? Description { get; set; }
+
+	[JsonPropertyName("scan_profile")]
+	public string? ScanProfile { get; set; }
 }

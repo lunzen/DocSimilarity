@@ -1,0 +1,118 @@
+@implements IAsyncDisposable
+@inject IJSRuntime JS
+
+<div class="row g-2 mb-2">
+    <div class="col-6">
+        <div class="d-flex align-items-center gap-2">
+            <select class="form-select form-select-sm" style="width: auto;" @bind="LeftDocId" @bind:after="OnSelectionChanged">
+                @foreach (var doc in AllDocs)
+                {
+                    <option value="@doc.Id">@doc.FileName</option>
+                }
+            </select>
+            <span class="badge bg-secondary">@LeftDoc?.WordCount words</span>
+            @if (_highlightsEnabled)
+            {
+                <span class="badge bg-danger">Removed</span>
+            }
+        </div>
+    </div>
+    <div class="col-6">
+        <div class="d-flex align-items-center gap-2">
+            <select class="form-select form-select-sm" style="width: auto;" @bind="RightDocId" @bind:after="OnSelectionChanged">
+                @foreach (var doc in AllDocs)
+                {
+                    <option value="@doc.Id">@doc.FileName</option>
+                }
+            </select>
+            <span class="badge bg-secondary">@RightDoc?.WordCount words</span>
+            @if (_highlightsEnabled)
+            {
+                <span class="badge bg-success">Added</span>
+            }
+        </div>
+    </div>
+</div>
+
+<div class="d-flex gap-2 mb-2">
+    <button class="btn btn-sm @(_highlightsEnabled ? "btn-warning" : "btn-outline-warning")"
+            @onclick="ToggleHighlights">
+        <i class="bi @(_highlightsEnabled ? "bi-eye-slash" : "bi-eye")"></i>
+        @(_highlightsEnabled ? "Hide Highlights" : "Show Highlights")
+    </button>
+</div>
+
+<div class="row g-2">
+    <div class="col-6">
+        <div class="border rounded pdf-render-pane" @ref="_pane1"></div>
+    </div>
+    <div class="col-6">
+        <div class="border rounded pdf-render-pane" @ref="_pane2"></div>
+    </div>
+</div>
+
+@code {
+    [Parameter] public List<Document> AllDocs { get; set; } = [];
+    [Parameter] public Document? Doc1 { get; set; }
+    [Parameter] public Document? Doc2 { get; set; }
+    [Parameter] public string DatabaseName { get; set; } = "";
+    [Parameter] public List<DiffLine> DiffLines { get; set; } = [];
+
+    private Guid? LeftDocId;
+    private Guid? RightDocId;
+    private bool _highlightsEnabled = true;
+    private bool _rendered;
+
+    private Document? LeftDoc => AllDocs.FirstOrDefault(d => d.Id == LeftDocId);
+    private Document? RightDoc => AllDocs.FirstOrDefault(d => d.Id == RightDocId);
+
+    private ElementReference _pane1;
+    private ElementReference _pane2;
+    private IJSObjectReference? _jsModule;
+
+    protected override void OnParametersSet()
+    {
+        LeftDocId ??= Doc1?.Id;
+        RightDocId ??= Doc2?.Id;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            _jsModule = await JS.InvokeAsync<IJSObjectReference>("import", "./js/pdfhighlight.js");
+            await RenderPdfs();
+            _rendered = true;
+        }
+    }
+
+    private async Task RenderPdfs()
+    {
+        if (_jsModule is null || LeftDoc is null || RightDoc is null) return;
+
+        var leftUrl = $"/api/documents/{LeftDoc.Id}/pdf?db={DatabaseName}";
+        var rightUrl = $"/api/documents/{RightDoc.Id}/pdf?db={DatabaseName}";
+
+        await _jsModule.InvokeVoidAsync("renderPdfComparison",
+            _pane1, _pane2, leftUrl, rightUrl, _highlightsEnabled);
+    }
+
+    private async Task OnSelectionChanged()
+    {
+        if (_rendered)
+            await RenderPdfs();
+    }
+
+    private async Task ToggleHighlights()
+    {
+        _highlightsEnabled = !_highlightsEnabled;
+        if (_rendered)
+            await RenderPdfs();
+    }
+
+    async ValueTask IAsyncDisposable.DisposeAsync()
+    {
+        try { if (_jsModule is not null) await _jsModule.DisposeAsync(); }
+        catch (JSDisconnectedException) { }
+    }
+}

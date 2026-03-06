@@ -13,6 +13,7 @@ public class DocumentDto
 	public DocumentQualityDto? Quality { get; set; }
 	public Dictionary<string, object?> Metadata { get; set; } = [];
 	public DateTimeOffset CreatedAt { get; set; }
+	public bool HasPdf { get; set; }
 }
 
 public class DocumentDetailDto : DocumentDto

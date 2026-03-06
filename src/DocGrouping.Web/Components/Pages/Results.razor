@@ -5,6 +5,9 @@
 @inject DocumentFingerprinter Fingerprinter
 @inject NavigationManager Nav
 @inject IJSRuntime JS
+@inject IPdfStorageService PdfStorage
+@inject DatabaseSelectorState DbState
+@using System.Text.Json
 @inject ILogger<Results> Logger
 
 <PageTitle>Results - DocGrouping</PageTitle>
@@ -81,7 +84,7 @@
 	{
 		@foreach (var group in _pageGroups)
 		{
-			<GroupCard Group="@group" />
+			<GroupCard Group="@group" DatabaseName="@DbState.ActiveDatabaseName" />
 		}
 	}
 
@@ -173,7 +176,9 @@
 							? m.Document.OriginalText[..200] + "..."
 							: m.Document.OriginalText,
 						DocumentType = m.Document.DocumentType,
-						CreatedAt = m.Document.CreatedAt
+						CreatedAt = m.Document.CreatedAt,
+						HasPdf = PdfStorage.Exists(m.Document.Id, DbState.ActiveDatabaseName),
+						Metadata = ExtractMetadata(m.Document.CustomMetadata)
 					}).ToList()
 				};
 
@@ -240,6 +245,27 @@
 		"None" => MatchConfidence.None,
 		_ => null
 	};
+
+	private static Dictionary<string, object?> ExtractMetadata(JsonDocument? customMetadata)
+	{
+		var dict = new Dictionary<string, object?>();
+		if (customMetadata == null) return dict;
+
+		foreach (var prop in customMetadata.RootElement.EnumerateObject())
+		{
+			dict[prop.Name] = prop.Value.ValueKind switch
+			{
+				JsonValueKind.String => prop.Value.GetString(),
+				JsonValueKind.Number => prop.Value.GetDouble(),
+				JsonValueKind.True => true,
+				JsonValueKind.False => false,
+				JsonValueKind.Null => null,
+				_ => prop.Value.GetRawText()
+			};
+		}
+
+		return dict;
+	}
 
 	private async Task ExportJson()
 	{

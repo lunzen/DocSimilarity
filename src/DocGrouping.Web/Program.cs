@@ -1,4 +1,5 @@
 using DocGrouping.Application.Interfaces;
+using DocGrouping.Infrastructure.Configuration;
 using DocGrouping.Infrastructure.Services;
 using DocGrouping.Domain.Interfaces;
 using DocGrouping.Infrastructure.Persistence;
@@ -40,6 +41,10 @@ try
 		var dbName = httpContextAccessor?.HttpContext?.Items["ActiveDatabase"] as string
 			?? dbState.ActiveDatabaseName;
 
+		var logger = sp.GetService<ILogger<DocGroupingDbContext>>();
+		logger?.LogInformation("DbContext factory resolving database: '{Database}' (from HttpContext: {FromHttp})",
+			dbName, httpContextAccessor?.HttpContext?.Items["ActiveDatabase"] != null);
+
 		options.UseNpgsql(resolver.GetConnectionString(dbName));
 	});
 
@@ -57,6 +62,13 @@ try
 	builder.Services.AddSingleton<OcrErrorSimulator>();
 	builder.Services.AddSingleton<StampGenerator>();
 	builder.Services.AddSingleton<RedactionSimulator>();
+
+	// Grouping thresholds
+	builder.Services.Configure<GroupingThresholds>(builder.Configuration.GetSection("GroupingThresholds"));
+
+	// PDF storage
+	builder.Services.Configure<PdfStorageOptions>(builder.Configuration.GetSection("PdfStorage"));
+	builder.Services.AddSingleton<IPdfStorageService, PdfStorageService>();
 
 	// Application services
 	builder.Services.AddScoped<IDocumentIngestionService, DocumentIngestionService>();
@@ -76,6 +88,38 @@ try
 	foreach (var dbName in dbState.AvailableDatabases)
 	{
 		await dbInitializer.EnsureCreatedAsync(dbName);
+	}
+
+	// Default to the database with the fewest records
+	{
+		var resolver = app.Services.GetRequiredService<DatabaseConnectionResolver>();
+		string? smallestDb = null;
+		long smallestCount = long.MaxValue;
+		foreach (var dbName in dbState.AvailableDatabases)
+		{
+			try
+			{
+				var optionsBuilder = new DbContextOptionsBuilder<DocGroupingDbContext>();
+				optionsBuilder.UseNpgsql(resolver.GetConnectionString(dbName));
+				await using var ctx = new DocGroupingDbContext(optionsBuilder.Options);
+				var count = await ctx.Documents.LongCountAsync();
+				Log.Information("Database '{Database}' has {Count} documents", dbName, count);
+				if (count < smallestCount)
+				{
+					smallestCount = count;
+					smallestDb = dbName;
+				}
+			}
+			catch (Exception ex)
+			{
+				Log.Warning(ex, "Could not count documents in '{Database}'", dbName);
+			}
+		}
+		if (smallestDb != null && smallestDb != dbState.ActiveDatabaseName)
+		{
+			dbState.ActiveDatabaseName = smallestDb;
+			Log.Information("Defaulting to database '{Database}' ({Count} documents)", smallestDb, smallestCount);
+		}
 	}
 
 	if (!app.Environment.IsDevelopment())

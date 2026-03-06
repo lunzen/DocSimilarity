@@ -5,6 +5,7 @@
 @inject DocumentFingerprinter Fingerprinter
 @inject IJSRuntime JS
 @inject ILogger<Comparison> Logger
+@inject DatabaseSelectorState DbState
 
 <PageTitle>Compare - Group @GroupNumber</PageTitle>
 
@@ -69,6 +70,11 @@
 				<i class="bi bi-card-text"></i> Summary
 			</button>
 		</li>
+		<li class="nav-item">
+			<button class="nav-link @(_activeTab == "pdf-compare" ? "active" : "")" @onclick='() => _activeTab = "pdf-compare"'>
+				<i class="bi bi-file-earmark-pdf"></i> PDF Compare
+			</button>
+		</li>
 	</ul>
 
 	@* Tab content *@
@@ -81,7 +87,11 @@
 			<UnifiedDiffView DiffLines="@_diffLines" />
 			break;
 		case "summary":
-			<DiffSummary DiffLines="@_diffLines" />
+			<DiffSummary DiffLines="@_diffLines" WordStats="@_wordStats" />
+			break;
+		case "pdf-compare":
+			<PdfCompareView AllDocs="@_allDocs" Doc1="@_doc1" Doc2="@_doc2"
+				DatabaseName="@DbState.ActiveDatabaseName" DiffLines="@_diffLines" />
 			break;
 	}
 
@@ -95,7 +105,7 @@
 	}
 
 	@* Metadata comparison *@
-	<MetadataComparison Doc1="@_doc1" Doc2="@_doc2" />
+	<MetadataComparison Doc1="@_doc1" Doc2="@_doc2" WordStats="@_wordStats" />
 }
 else if (!_loading)
 {
@@ -113,6 +123,7 @@ else if (!_loading)
 	private Document? _doc2;
 	private List<Document> _allDocs = [];
 	private List<DiffLine> _diffLines = [];
+	private WordDiffStats? _wordStats;
 	private MatchExplanationDto? _explanation;
 	private string _activeTab = "side-by-side";
 	private bool _loading = true;
@@ -154,7 +165,9 @@ else if (!_loading)
 	{
 		if (_doc1 is null || _doc2 is null) return;
 
-		_diffLines = _diffEngine.ComputeDiff(_doc1.OriginalText, _doc2.OriginalText);
+		_diffLines = DiffEngine.AddInlineHighlighting(
+			_diffEngine.ComputeDiff(_doc1.OriginalText, _doc2.OriginalText));
+		_wordStats = _diffEngine.ComputeWordStats(_doc1.OriginalText, _doc2.OriginalText);
 
 		var metrics = Fingerprinter.CalculateSimilarityMetrics(
 			_doc1.NormalizedText, _doc2.NormalizedText);
