@@ -226,7 +226,7 @@ The original estimate spec'd a single c7i.8xlarge (32 vCPU, 64 GB) worker. That'
 | S3 GET requests for text (worst case) | ~5M requests |
 | Wall-clock time (8 workers) | ~4-8 hours |
 | **Compute cost** | **$22-$44** |
-| **S3 GET request cost** | **$2-$3** (5M × $0.0004/1000) |
+| **S3 GET request cost** | **$2-$3** (5M requests × $0.0004 per 1,000) |
 | With Spot instances | **$9-$18 compute** |
 
 #### Processing Phase Total
@@ -257,15 +257,15 @@ The original estimate spec'd a single c7i.8xlarge (32 vCPU, 64 GB) worker. That'
 | **S3 Infrequent Access for Phase 1 PDFs** (read once during extraction, then rarely) | ~$150/mo | 30-day minimum storage, retrieval fee |
 | **Stop RDS between runs** | ~$460/mo saved when idle | 15-20 min startup time, automated backups still charged |
 | **Spot instances for Batch workers** | 60-70% compute savings | Workers can be interrupted (Batch handles retry) |
-| **Reserved Instance for RDS** (1-year) | ~30% savings ($140/mo) | Commitment |
+| **Reserved Instance for RDS** (1-year) | ~30% savings (~$140/mo) | Commitment |
 | **Graviton (ARM) instances** | ~20% cheaper than x86 | .NET 10 runs natively on ARM, no code changes |
 
 ### 5.4 Total Cost Summary
 
 | Scenario | First Run | Monthly (Always On) | Monthly (Optimized) |
 |----------|-----------|--------------------|--------------------|
-| **Process 7M docs, keep infra running** | $35-$140 (compute) | $1,040-$1,060 | $600-$750 (with RI + S3 tiering + RDS stop) |
-| **Process, then tear down non-storage** | $35-$140 | $495 (S3 only) | $350 (S3 IA for Phase 1) |
+| **Process 7M docs, keep infra running** | $35-$140 (compute) | $1,040-$1,060/mo | $600-$750/mo (with RI + S3 tiering + RDS stop) |
+| **Process, then tear down non-storage** | $35-$140 | $495/mo (S3 only) | $350/mo (S3 IA for Phase 1) |
 | **Recurring incremental runs** | — | +$35-$60 per run | Spot + S3 text cache = cheap |
 
 ### 5.5 Comparison with Original Estimate
@@ -273,10 +273,10 @@ The original estimate spec'd a single c7i.8xlarge (32 vCPU, 64 GB) worker. That'
 | Item | Original Estimate | Revised Estimate | Why Different |
 |------|------------------|------------------|---------------|
 | Idle monthly cost | $790/mo | $1,040-$1,060/mo | More realistic RDS sizing (Multi-AZ), larger EC2 for Blazor |
-| Processing compute | $12-$25 (single run) | $35-$140 | Accounts for text extraction step separately; more conservative |
+| Processing compute | $12-$25 (single run) | $35-$140 (single run) | Accounts for text extraction step separately; more conservative |
 | Processing time | 4-8 hours (Tier 1+2 changes) | 15-25 hours total | Includes extraction time; more realistic with S3 I/O |
 | Bedrock embedding cost | "Depends on doc count" | **$0 for initial run** | Removed from initial pipeline — hash cascade sufficient for born-digital |
-| RDS instance | db.r6g.xlarge ($250/mo) | db.r6g.xlarge Multi-AZ ($460/mo) | Production needs Multi-AZ for reliability |
+| RDS instance | db.r6g.xlarge (~$250/mo) | db.r6g.xlarge Multi-AZ (~$460/mo) | Production needs Multi-AZ for reliability |
 | Workers | 1 × c7i.8xlarge | 8 × c7i.4xlarge | Parallel workers with fault isolation |
 
 ---
@@ -428,10 +428,10 @@ For context, here's how DocGrouping compares to commercial document deduplicatio
 
 | Option | First-Year Cost | Ongoing Annual | Notes |
 |--------|----------------|---------------|-------|
-| **DocGrouping on AWS** | $15-$20K | $8-$13K | Infrastructure + development time |
+| **DocGrouping on AWS** | $15K-$20K | $8K-$13K/yr | Infrastructure + development time |
 | **Relativity Analytics** | $100K+ | $50K+/yr | Enterprise e-discovery platform, license per GB |
 | **Nuix** | $75K+ | $40K+/yr | License-based, per-processing-volume |
-| **Custom ML pipeline** | $50-$100K | $20-$40K | Data science team + GPU infrastructure |
+| **Custom ML pipeline** | $50K-$100K | $20K-$40K/yr | Data science team + GPU infrastructure |
 | **Manual review** | $500K+ | Ongoing | At 7M documents × 30 seconds each = ~58,000 person-hours |
 
 DocGrouping's approach — deterministic hashing + mathematical similarity rather than ML models — means:
