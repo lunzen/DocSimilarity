@@ -26,6 +26,21 @@ public class DocumentDetailDto : DocumentDto
 	public long FileSizeBytes { get; set; }
 }
 
+public class GroupExportRow
+{
+	public string DocumentName { get; set; } = string.Empty;
+	public Guid DocumentId { get; set; }
+	public string GroupLabel { get; set; } = string.Empty;
+	public int GroupNumber { get; set; }
+	public string ConfidenceTier { get; set; } = string.Empty;
+	public string MatchMethod { get; set; } = string.Empty;
+	public decimal SimilarityScore { get; set; }
+	public bool IsCanonical { get; set; }
+	public string? DocumentType { get; set; }
+	public int GroupSize { get; set; }
+	public DateTimeOffset IngestedAt { get; set; }
+}
+
 public class DocumentQualityDto
 {
 	public double OcrQuality { get; set; }

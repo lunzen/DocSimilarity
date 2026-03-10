@@ -1,10 +1,14 @@
+using System.Globalization;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using DocGrouping.Application.DTOs;
 using DocGrouping.Application.Interfaces;
 using DocGrouping.Domain.Entities;
 using DocGrouping.Domain.Interfaces;
 using DocGrouping.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 
 namespace DocGrouping.Web.Controllers;
 
@@ -94,6 +98,82 @@ public class DocumentsController(
 			fuzzy_hash = d.FuzzyHash[..16] + "...",
 			d.CreatedAt
 		}));
+	}
+
+	[HttpGet("export")]
+	public async Task<IActionResult> Export(
+		[FromQuery] string format = "csv",
+		[FromQuery] string labelPrefix = "GRP",
+		CancellationToken ct = default)
+	{
+		var rows = await dbContext.Set<DocumentGroupMembership>()
+			.AsNoTracking()
+			.Include(m => m.Document)
+			.Include(m => m.Group)
+			.OrderBy(m => m.Group.GroupNumber)
+			.ThenByDescending(m => m.IsCanonical)
+			.ThenBy(m => m.Document.FileName)
+			.Select(m => new GroupExportRow
+			{
+				DocumentName = m.Document.FileName,
+				DocumentId = m.DocumentId,
+				GroupLabel = labelPrefix + "-" + m.Group.GroupNumber.ToString("D5"),
+				GroupNumber = m.Group.GroupNumber,
+				ConfidenceTier = m.Group.Confidence.ToString(),
+				MatchMethod = m.Group.MatchReason,
+				SimilarityScore = m.SimilarityScore,
+				IsCanonical = m.IsCanonical,
+				DocumentType = m.Document.DocumentType,
+				GroupSize = m.Group.DocumentCount,
+				IngestedAt = m.Document.CreatedAt
+			})
+			.ToListAsync(ct);
+
+		if (format.Equals("json", StringComparison.OrdinalIgnoreCase))
+		{
+			var payload = new
+			{
+				exported_at = DateTimeOffset.UtcNow,
+				label_prefix = labelPrefix,
+				total_documents = rows.Count,
+				total_groups = rows.Select(r => r.GroupNumber).Distinct().Count(),
+				documents = rows
+			};
+			var jsonBytes = JsonSerializer.SerializeToUtf8Bytes(payload, new JsonSerializerOptions
+			{
+				WriteIndented = true,
+				PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+			});
+			return File(jsonBytes, "application/json", $"docgrouping-export-{DateTime.UtcNow:yyyyMMdd-HHmmss}.json");
+		}
+
+		// CSV
+		var sb = new StringBuilder();
+		sb.AppendLine("DocumentName,DocumentId,GroupLabel,GroupNumber,ConfidenceTier,MatchMethod,SimilarityScore,IsCanonical,DocumentType,GroupSize,IngestedAt");
+		foreach (var r in rows)
+		{
+			sb.Append(CsvEscape(r.DocumentName)).Append(',');
+			sb.Append(r.DocumentId).Append(',');
+			sb.Append(r.GroupLabel).Append(',');
+			sb.Append(r.GroupNumber).Append(',');
+			sb.Append(r.ConfidenceTier).Append(',');
+			sb.Append(CsvEscape(r.MatchMethod)).Append(',');
+			sb.Append(r.SimilarityScore.ToString(CultureInfo.InvariantCulture)).Append(',');
+			sb.Append(r.IsCanonical).Append(',');
+			sb.Append(CsvEscape(r.DocumentType ?? "")).Append(',');
+			sb.Append(r.GroupSize).Append(',');
+			sb.AppendLine(r.IngestedAt.ToString("o"));
+		}
+
+		var bytes = Encoding.UTF8.GetBytes(sb.ToString());
+		return File(bytes, "text/csv", $"docgrouping-export-{DateTime.UtcNow:yyyyMMdd-HHmmss}.csv");
+	}
+
+	private static string CsvEscape(string value)
+	{
+		if (value.Contains(',') || value.Contains('"') || value.Contains('\n'))
+			return "\"" + value.Replace("\"", "\"\"") + "\"";
+		return value;
 	}
 
 	[HttpGet("canonicals")]

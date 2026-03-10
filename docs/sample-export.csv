@@ -1,0 +1,19 @@
+DocumentName,DocumentId,GroupLabel,GroupNumber,ConfidenceTier,MatchMethod,SimilarityScore,IsCanonical,DocumentType,GroupSize,IngestedAt
+scn_240d1fa9_medium_plugging-report_2026-03-06.pdf,cee62e4c-f8ca-43bd-931a-8e3753bd9c77,GRP-00001,1,VeryHigh,Exact text match (normalized),1.0000,True,,3,2026-03-06T15:10:31.0893570+00:00
+scn_240d1fa9_office_plugging-report_2026-03-06.pdf,06088f54-eec0-49f9-8c93-ceab18088df2,GRP-00001,1,VeryHigh,Exact text match (normalized),1.0000,False,,3,2026-03-06T15:10:31.1865330+00:00
+scn_240d1fa9_poor_plugging-report_2026-03-06.pdf,8f6ce0cd-4af3-4436-9268-3865000f5e9d,GRP-00001,1,VeryHigh,Exact text match (normalized),1.0000,False,,3,2026-03-06T15:10:31.1465000+00:00
+dup_1b3b85da_high_og-lease_2026-03-06.pdf,05932a9a-4c0e-425b-8281-124fd92b3baf,GRP-00002,2,VeryHigh,Exact text match (normalized),1.0000,True,,2,2026-03-06T15:10:31.3152360+00:00
+dup_1b3b85da_very-high_og-lease_2026-03-06.pdf,73e7fadc-f378-40a6-8541-285e18d8d36f,GRP-00002,2,VeryHigh,Exact text match (normalized),1.0000,False,,2,2026-03-06T15:10:31.3537360+00:00
+surface-use-agreement_pbep_mary-adams_2026-03-06.pdf,fed0c860-7b1f-4275-9bbe-6af14981d911,GRP-00003,3,Medium,Moderate content similarity (50%-85% Jaccard),1.0000,True,,2,2026-03-06T15:12:21.3936800+00:00
+surface-use-agreement_angc_heather-ball_2026-03-06.pdf,1a0e1c82-b093-44bd-b284-40ed92654858,GRP-00003,3,Medium,Moderate content similarity (50%-85% Jaccard),0.7500,False,,2,2026-03-06T15:12:21.5358590+00:00
+og-lease_pbep_scott-howard_2026-03-06.pdf,5b0bbe89-8d52-4c2e-a8ec-765a3e35ea13,GRP-00004,4,Medium,Moderate content similarity (50%-85% Jaccard),1.0000,True,,4,2026-03-06T15:12:21.4515720+00:00
+dup_1b3b85da_medium_og-lease_2026-03-06.pdf,e1d109bb-c617-4945-8579-47065a90ddc5,GRP-00004,4,Medium,Moderate content similarity (50%-85% Jaccard),0.7500,False,,4,2026-03-06T15:10:31.2889330+00:00
+dup_1b3b85da_unique_og-lease_2026-03-06.pdf,c73f74f5-f185-4231-bafd-d9830bbcd7ff,GRP-00004,4,Medium,Moderate content similarity (50%-85% Jaccard),0.7500,False,,4,2026-03-06T15:10:31.2507350+00:00
+og-lease_angc_dakota-campbell_2026-03-06.pdf,4151ebfb-01b3-405a-8a42-e02dbf68bf1e,GRP-00004,4,Medium,Moderate content similarity (50%-85% Jaccard),0.7500,False,,4,2026-03-06T15:12:21.6060480+00:00
+mineral-deed_pbep_justin-brown_2026-03-06.pdf,04a76e7c-b75a-4562-a3fb-6edc312e38b3,GRP-00005,5,Medium,Moderate content similarity (50%-85% Jaccard),1.0000,True,,2,2026-03-06T15:12:21.4221930+00:00
+mineral-deed_angc_amber-reynolds_2026-03-06.pdf,7645efab-25f2-4aab-b1cf-f38a4ebbcbb9,GRP-00005,5,Medium,Moderate content similarity (50%-85% Jaccard),0.7500,False,,2,2026-03-06T15:12:21.5764330+00:00
+division-order_pbep_donald-barnes_2026-03-06.pdf,dc203806-2ca3-406b-8d36-b38aa3bf2197,GRP-00006,6,Medium,Moderate content similarity (50%-85% Jaccard),1.0000,True,,2,2026-03-06T15:12:21.3359320+00:00
+division-order_angc_william-fisher_2026-03-06.pdf,2b2523f0-560c-4deb-9622-e01b19153368,GRP-00006,6,Medium,Moderate content similarity (50%-85% Jaccard),0.7500,False,,2,2026-03-06T15:12:21.4790370+00:00
+right-of-way_pbep_tonya-hernandez_2026-03-06.pdf,f65de445-ae04-4f4b-96e4-d1179bc03e24,GRP-00007,7,Medium,Moderate content similarity (50%-85% Jaccard),1.0000,True,,2,2026-03-06T15:12:21.3667030+00:00
+right-of-way_angc_lisa-jimenez_2026-03-06.pdf,c984c757-0d73-46b6-ab80-edb25c5d8fb6,GRP-00007,7,Medium,Moderate content similarity (50%-85% Jaccard),0.7500,False,,2,2026-03-06T15:12:21.5081920+00:00
+scn_240d1fa9_clean_plugging-report_2026-03-06.pdf,39cf5966-83fe-4a4e-b4d0-6d73fc704d98,GRP-00008,8,None,No matches found (unique document),1.0000,True,,1,2026-03-06T15:10:31.2096510+00:00
